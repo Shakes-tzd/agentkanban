@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import ToolIcon from './icons/ToolIcon.vue'
 
 interface Feature {
   id: string
@@ -70,28 +71,121 @@ function formatTime(dateStr: string): string {
   return date.toLocaleString()
 }
 
-function getEventIcon(eventType: string): string {
-  const icons: Record<string, string> = {
-    'ToolUse': '🔧',
-    'ToolCall': '🔧',
-    'ToolResult': '📤',
-    'SessionStart': '🚀',
-    'SessionEnd': '🏁',
-    'FeatureCompleted': '✅',
-    'Error': '❌',
-    'TranscriptUpdated': '💬',
-  }
-  return icons[eventType] || '📝'
+// Tool name to icon mapping
+const toolIconNames: Record<string, string> = {
+  Bash: 'terminal',
+  BashOutput: 'terminal-output',
+  Read: 'file',
+  Write: 'file-plus',
+  Edit: 'file-edit',
+  Grep: 'search',
+  Glob: 'folder-search',
+  Task: 'bot',
+  TodoWrite: 'check-square',
+  TodoRead: 'list',
+  WebFetch: 'globe',
+  WebSearch: 'search-globe',
 }
 
-function getToolIcon(toolName?: string): string {
-  if (!toolName) return ''
-  const icons: Record<string, string> = {
-    'Thinking': '🧠',
-    'Response': '💬',
-    'UserMessage': '👤',
+// Event type to icon mapping (fallback)
+const eventIconNames: Record<string, string> = {
+  SessionStart: 'rocket',
+  SessionEnd: 'flag',
+  ToolCall: 'wrench',
+  ToolUse: 'wrench',
+  FeatureCompleted: 'check-square',
+  Error: 'x-circle',
+  TranscriptUpdated: 'message',
+  UserQuery: 'user',
+  AgentStop: 'stop',
+  SubagentStop: 'cpu',
+}
+
+function getIconName(event: AgentEvent): string {
+  // Prefer tool-specific icon
+  if (event.toolName && toolIconNames[event.toolName]) {
+    return toolIconNames[event.toolName]
   }
-  return icons[toolName] || ''
+  return eventIconNames[event.eventType] || 'wrench'
+}
+
+function getDescriptiveTitle(event: AgentEvent): string {
+  const payload = parsePayload(event.payload)
+
+  if (event.eventType === 'UserQuery') {
+    const prompt = payload?.preview || ''
+    return prompt ? truncateText(prompt, 50) : 'User Query'
+  }
+  if (event.eventType === 'SessionStart') return 'Session Started'
+  if (event.eventType === 'SessionEnd') return 'Session Ended'
+  if (event.eventType === 'AgentStop') {
+    return `Agent Stopped`
+  }
+  if (event.eventType === 'TranscriptUpdated') {
+    const msgType = payload?.messageType || event.toolName
+    if (msgType === 'tool_result' || event.toolName === 'ToolResult') {
+      return 'Tool Result'
+    }
+    return msgType || 'Transcript Update'
+  }
+  if (event.eventType === 'ToolCall' && event.toolName) {
+    return getToolTitle(event.toolName, payload)
+  }
+  return event.toolName || event.eventType
+}
+
+function getToolTitle(toolName: string, payload: ParsedPayload | null): string {
+  switch (toolName) {
+    case 'Bash': {
+      const cmd = payload?.command || ''
+      if (cmd) {
+        const parts = cmd.trim().split(/\s+/)
+        return `$ ${truncateText(parts.slice(0, 3).join(' '), 40)}`
+      }
+      return 'Run Command'
+    }
+    case 'BashOutput':
+      return 'Check Background Output'
+    case 'Read':
+      return payload?.filePath ? `Read ${getFileName(payload.filePath)}` : 'Read File'
+    case 'Write':
+      return payload?.filePath ? `Write ${getFileName(payload.filePath)}` : 'Write File'
+    case 'Edit':
+      return payload?.filePath ? `Edit ${getFileName(payload.filePath)}` : 'Edit File'
+    case 'Grep':
+      return payload?.pattern ? `Search: ${truncateText(payload.pattern, 30)}` : 'Search Code'
+    case 'Glob':
+      return payload?.pattern ? `Find: ${truncateText(payload.pattern, 30)}` : 'Find Files'
+    case 'Task':
+      return payload?.description ? `Task: ${truncateText(payload.description, 35)}` : 'Run Task'
+    case 'TodoWrite':
+      return 'Update Todos'
+    case 'TodoRead':
+      return 'Read Todos'
+    default:
+      return toolName
+  }
+}
+
+function truncateText(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str
+  return str.slice(0, maxLen - 1) + '…'
+}
+
+function getFileName(path: string): string {
+  const parts = path.split('/')
+  return parts[parts.length - 1] || path
+}
+
+function getEventTypeBadge(eventType: string): string {
+  switch (eventType) {
+    case 'ToolCall': return 'call'
+    case 'TranscriptUpdated': return 'result'
+    case 'UserQuery': return 'query'
+    case 'SessionStart': return 'start'
+    case 'AgentStop': return 'stop'
+    default: return eventType.toLowerCase()
+  }
 }
 
 interface ParsedPayload {
@@ -254,24 +348,28 @@ onUnmounted(() => {
                 ]"
                 @click="toggleExpand(event.id)"
               >
-                <span class="event-icon">{{ getEventIcon(event.eventType) }}</span>
+                <span class="event-icon">
+                  <ToolIcon :name="getIconName(event)" :size="16" />
+                </span>
                 <div class="event-content">
                   <div class="event-header">
-                    <span class="event-type">{{ event.eventType }}</span>
+                    <div class="event-header-left">
+                      <span class="event-type-badge">{{ getEventTypeBadge(event.eventType) }}</span>
+                      <span class="event-agent">{{ event.sourceAgent }}</span>
+                    </div>
                     <div class="event-header-right">
+                      <span
+                        v-if="parsePayload(event.payload)?.success !== undefined"
+                        :class="['event-status', parsePayload(event.payload)?.success ? 'status-success' : 'status-error']"
+                      >
+                        {{ parsePayload(event.payload)?.success ? '✓' : '✗' }}
+                      </span>
                       <span class="event-time">{{ formatTime(event.createdAt) }}</span>
                       <span class="expand-icon">{{ isExpanded(event.id) ? '▼' : '▶' }}</span>
                     </div>
                   </div>
-                  <div class="event-details">
-                    <span class="event-agent">{{ event.sourceAgent }}</span>
-                    <span v-if="event.toolName" class="event-tool">{{ event.toolName }}</span>
-                    <span
-                      v-if="parsePayload(event.payload)?.success !== undefined"
-                      :class="['event-status', parsePayload(event.payload)?.success ? 'status-success' : 'status-error']"
-                    >
-                      {{ parsePayload(event.payload)?.success ? '✓' : '✗' }}
-                    </span>
+                  <div class="event-title">
+                    {{ getDescriptiveTitle(event) }}
                   </div>
                   <!-- Preview (collapsed) -->
                   <div v-if="!isExpanded(event.id)" class="event-preview">
@@ -346,7 +444,7 @@ onUnmounted(() => {
                       </div>
                     </div>
                     <!-- Raw payload toggle -->
-                    <div v-if="event.payload" class="event-raw">
+                    <div v-if="event.payload" class="event-raw" @click.stop>
                       <details>
                         <summary>Raw payload</summary>
                         <pre>{{ JSON.stringify(parsePayload(event.payload), null, 2) }}</pre>
@@ -598,8 +696,25 @@ onUnmounted(() => {
 }
 
 .event-icon {
-  font-size: 1.25rem;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  background: var(--bg-primary);
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+
+.event-item.success .event-icon {
+  color: var(--accent-green);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.event-item.failure .event-icon {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
 }
 
 .event-content {
@@ -614,10 +729,34 @@ onUnmounted(() => {
   margin-bottom: 4px;
 }
 
+.event-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .event-header-right {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.event-type-badge {
+  font-size: 0.6rem;
+  font-weight: 500;
+  padding: 2px 6px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.event-agent {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--accent-blue);
+  text-transform: uppercase;
 }
 
 .expand-icon {
@@ -626,27 +765,17 @@ onUnmounted(() => {
   transition: transform 0.2s;
 }
 
-.event-type {
+.event-title {
+  font-size: 0.85rem;
   font-weight: 500;
-  font-size: 0.9rem;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  line-height: 1.4;
 }
 
 .event-time {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: var(--text-muted);
-}
-
-.event-details {
-  display: flex;
-  gap: 8px;
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-}
-
-.event-tool {
-  padding: 2px 6px;
-  background: var(--bg-secondary);
-  border-radius: 4px;
 }
 
 .event-status {

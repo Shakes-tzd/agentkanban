@@ -19,29 +19,175 @@ from urllib.error import URLError
 SYNC_SERVER = os.environ.get("AGENTKANBAN_SERVER", "http://127.0.0.1:4000")
 
 
+def load_features(project_dir: str) -> list[dict] | None:
+    """Load feature_list.json."""
+    feature_file = Path(project_dir) / "feature_list.json"
+    if not feature_file.exists():
+        return None
+    try:
+        return json.loads(feature_file.read_text())
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def save_features(project_dir: str, features: list[dict]) -> bool:
+    """Save feature_list.json."""
+    feature_file = Path(project_dir) / "feature_list.json"
+    try:
+        feature_file.write_text(json.dumps(features, indent=2))
+        return True
+    except IOError:
+        return False
+
+
 def get_active_feature(project_dir: str) -> dict | None:
     """Get the currently active feature (inProgress: true).
 
     Returns feature with ID in format 'project_dir:index' to match database storage.
     """
-    feature_file = Path(project_dir) / "feature_list.json"
-    if not feature_file.exists():
+    features = load_features(project_dir)
+    if not features:
         return None
 
-    try:
-        features = json.loads(feature_file.read_text())
-        for index, feature in enumerate(features):
-            if feature.get("inProgress"):
-                # ID format must match database: project_dir:index
-                feature_id = f"{project_dir}:{index}"
-                return {
-                    "id": feature_id,
-                    "description": feature.get("description"),
-                    "category": feature.get("category", "functional")
-                }
-    except (json.JSONDecodeError, IOError):
+    for index, feature in enumerate(features):
+        if feature.get("inProgress"):
+            # ID format must match database: project_dir:index
+            feature_id = f"{project_dir}:{index}"
+            return {
+                "id": feature_id,
+                "index": index,
+                "description": feature.get("description"),
+                "category": feature.get("category", "functional"),
+                "completionCriteria": feature.get("completionCriteria"),
+                "workCount": feature.get("workCount", 0)
+            }
+
+    return None
+
+
+def check_completion_criteria(
+    feature: dict,
+    tool_name: str,
+    tool_input: dict,
+    tool_result: dict
+) -> tuple[bool, str]:
+    """Check if a tool call satisfies the feature's completion criteria."""
+    import re
+
+    criteria = feature.get("completionCriteria", {})
+    criteria_type = criteria.get("type", "manual")
+
+    # Check if tool result indicates success
+    is_error = tool_result.get("is_error", False)
+    if is_error:
+        return False, ""
+
+    # Check based on criteria type
+    if criteria_type == "build":
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "").lower()
+            pattern = criteria.get("command_pattern", "")
+            if pattern:
+                if re.search(pattern, cmd, re.IGNORECASE):
+                    return True, "Build passed"
+            elif any(kw in cmd for kw in ["build", "compile", "cargo build", "pnpm build", "npm run build"]):
+                return True, "Build passed"
+
+    elif criteria_type == "test":
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "").lower()
+            if any(kw in cmd for kw in ["test", "pytest", "jest", "vitest", "cargo test"]):
+                return True, "Tests passed"
+
+    elif criteria_type == "lint":
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "").lower()
+            if any(kw in cmd for kw in ["lint", "eslint", "prettier", "clippy"]):
+                return True, "Lint passed"
+
+    elif criteria_type == "work_count":
+        # Check if work count threshold reached (handled separately)
         pass
 
+    elif criteria_type == "any_success":
+        if tool_name in {"Edit", "Write", "Bash"}:
+            return True, "Work completed"
+
+    return False, ""
+
+
+def maybe_auto_complete(
+    project_dir: str,
+    tool_name: str,
+    tool_input: dict,
+    tool_result: dict
+) -> str | None:
+    """Check if the active feature should be auto-completed. Returns status message."""
+    features = load_features(project_dir)
+    if not features:
+        return None
+
+    # Find active feature
+    active_idx = None
+    active_feature = None
+    for i, f in enumerate(features):
+        if f.get("inProgress"):
+            active_idx = i
+            active_feature = f
+            break
+
+    if active_idx is None or active_feature is None:
+        return None
+
+    # Skip if already complete
+    if active_feature.get("passes"):
+        return None
+
+    # Check if this is a "work" tool (not read-only)
+    is_work_tool = tool_name in {"Edit", "Write", "Bash", "Task"}
+    is_error = tool_result.get("is_error", False)
+
+    # Increment work count for successful work tools
+    if is_work_tool and not is_error:
+        work_count = active_feature.get("workCount", 0) + 1
+        features[active_idx]["workCount"] = work_count
+
+        # Check work_count completion criteria
+        criteria = active_feature.get("completionCriteria", {})
+        if criteria.get("type") == "work_count":
+            threshold = criteria.get("count", 3)
+            if work_count >= threshold:
+                features[active_idx]["passes"] = True
+                features[active_idx]["inProgress"] = False
+                activate_next_feature(features)
+                save_features(project_dir, features)
+                return f"Auto-completed (work count: {work_count})"
+
+    # Check other completion criteria
+    is_complete, reason = check_completion_criteria(
+        active_feature, tool_name, tool_input, tool_result
+    )
+
+    if is_complete:
+        features[active_idx]["passes"] = True
+        features[active_idx]["inProgress"] = False
+        activate_next_feature(features)
+        save_features(project_dir, features)
+        return f"Auto-completed: {reason}"
+
+    # Save updated work count even if not complete
+    if is_work_tool and not is_error:
+        save_features(project_dir, features)
+
+    return None
+
+
+def activate_next_feature(features: list[dict]) -> int | None:
+    """Activate the next incomplete feature. Returns its index."""
+    for i, f in enumerate(features):
+        if not f.get("passes") and not f.get("inProgress"):
+            features[i]["inProgress"] = True
+            return i
     return None
 
 
@@ -146,6 +292,25 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str):
         event["payload"]["featureDescription"] = active_feature["description"]
 
     send_event(event)
+
+    # Check for auto-completion after tracking the event
+    completion_status = maybe_auto_complete(project_dir, tool_name, tool_input, tool_result)
+    if completion_status:
+        # Add completion info to event payload for observability
+        completion_event = {
+            "eventType": "FeatureCompleted",
+            "sourceAgent": "claude-code",
+            "sessionId": session_id,
+            "projectDir": project_dir,
+            "payload": {
+                "completionStatus": completion_status,
+                "triggeredBy": tool_name
+            }
+        }
+        if active_feature:
+            completion_event["featureId"] = active_feature["id"]
+            completion_event["payload"]["featureDescription"] = active_feature["description"]
+        send_event(completion_event)
 
 
 def handle_stop(hook_input: dict, project_dir: str, session_id: str):

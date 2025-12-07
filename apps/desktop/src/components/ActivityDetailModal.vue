@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
+import ToolIcon from './icons/ToolIcon.vue'
 
 interface AgentEvent {
   id: number
@@ -39,21 +40,119 @@ function formatTime(dateStr: string): string {
   return date.toLocaleString()
 }
 
-function getEventIcon(eventType: string): string {
-  const icons: Record<string, string> = {
-    'ToolUse': '🔧',
-    'ToolCall': '🔧',
-    'ToolResult': '📤',
-    'SessionStart': '🚀',
-    'SessionEnd': '🏁',
-    'FeatureCompleted': '✅',
-    'Error': '❌',
-    'TranscriptUpdated': '💬',
-    'AgentStop': '🛑',
-    'SubagentStop': '🤖',
-    'UserQuery': '💬',
+// Tool name to icon mapping
+const toolIconNames: Record<string, string> = {
+  Bash: 'terminal',
+  BashOutput: 'terminal-output',
+  Read: 'file',
+  Write: 'file-plus',
+  Edit: 'file-edit',
+  Grep: 'search',
+  Glob: 'folder-search',
+  Task: 'bot',
+  TodoWrite: 'check-square',
+  TodoRead: 'list',
+  WebFetch: 'globe',
+  WebSearch: 'search-globe',
+}
+
+const eventIconNames: Record<string, string> = {
+  'ToolUse': 'wrench',
+  'ToolCall': 'wrench',
+  'ToolResult': 'upload',
+  'SessionStart': 'rocket',
+  'SessionEnd': 'flag',
+  'FeatureCompleted': 'check-square',
+  'Error': 'x-circle',
+  'TranscriptUpdated': 'message',
+  'AgentStop': 'stop',
+  'SubagentStop': 'cpu',
+  'UserQuery': 'user',
+}
+
+function getIconName(event: AgentEvent): string {
+  // Prefer tool-specific icon
+  if (event.toolName && toolIconNames[event.toolName]) {
+    return toolIconNames[event.toolName]
   }
-  return icons[eventType] || '📝'
+  return eventIconNames[event.eventType] || 'wrench'
+}
+
+function getDescriptiveTitle(event: AgentEvent): string {
+  const payload = parsePayload(event.payload)
+
+  if (event.eventType === 'UserQuery') {
+    return 'User Query'
+  }
+  if (event.eventType === 'SessionStart') return 'Session Started'
+  if (event.eventType === 'SessionEnd') return 'Session Ended'
+  if (event.eventType === 'AgentStop') return 'Agent Stopped'
+  if (event.eventType === 'SubagentStop') {
+    const task = payload?.taskDescription || payload?.subagentType || ''
+    return task ? `Subagent: ${truncateText(task, 40)}` : 'Subagent Completed'
+  }
+  if (event.eventType === 'TranscriptUpdated') {
+    const msgType = payload?.messageType || event.toolName
+    if (msgType === 'tool_result' || event.toolName === 'ToolResult') {
+      return 'Tool Result'
+    }
+    return msgType || 'Transcript Update'
+  }
+  if (event.eventType === 'ToolCall' && event.toolName) {
+    return getToolTitle(event.toolName, payload)
+  }
+  return event.toolName || event.eventType
+}
+
+function getToolTitle(toolName: string, payload: ParsedPayload | null): string {
+  switch (toolName) {
+    case 'Bash': {
+      const cmd = payload?.command || ''
+      if (cmd) {
+        const parts = cmd.trim().split(/\s+/)
+        return `$ ${truncateText(parts.slice(0, 3).join(' '), 40)}`
+      }
+      return 'Run Command'
+    }
+    case 'BashOutput':
+      return 'Check Background Output'
+    case 'Read':
+      return payload?.filePath ? `Read ${getFileName(payload.filePath)}` : 'Read File'
+    case 'Write':
+      return payload?.filePath ? `Write ${getFileName(payload.filePath)}` : 'Write File'
+    case 'Edit':
+      return payload?.filePath ? `Edit ${getFileName(payload.filePath)}` : 'Edit File'
+    case 'Grep':
+      return payload?.pattern ? `Search: ${truncateText(payload.pattern, 30)}` : 'Search Code'
+    case 'Glob':
+      return payload?.pattern ? `Find: ${truncateText(payload.pattern, 30)}` : 'Find Files'
+    case 'Task':
+      return payload?.taskDescription ? `Task: ${truncateText(payload.taskDescription, 35)}` : 'Run Task'
+    default:
+      return toolName
+  }
+}
+
+function truncateText(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str
+  return str.slice(0, maxLen - 1) + '…'
+}
+
+function getFileName(path: string): string {
+  const parts = path.split('/')
+  return parts[parts.length - 1] || path
+}
+
+function getEventTypeBadge(eventType: string): string {
+  switch (eventType) {
+    case 'ToolCall': return 'call'
+    case 'TranscriptUpdated': return 'result'
+    case 'UserQuery': return 'query'
+    case 'SessionStart': return 'start'
+    case 'AgentStop': return 'stop'
+    case 'SubagentStop': return 'agent'
+    default: return eventType.toLowerCase()
+  }
 }
 
 function getProjectName(projectDir: string): string {
@@ -131,14 +230,21 @@ onUnmounted(() => {
       <div class="modal-content">
         <div class="modal-header">
           <div class="header-left">
-            <span class="event-icon-large">{{ getEventIcon(event.eventType) }}</span>
-            <span class="event-type-badge">{{ event.eventType }}</span>
-            <span
-              v-if="parsePayload(event.payload)?.success !== undefined"
-              :class="['status-badge', parsePayload(event.payload)?.success ? 'status-success' : 'status-error']"
-            >
-              {{ parsePayload(event.payload)?.success ? 'Success' : 'Failed' }}
+            <span class="event-icon-large">
+              <ToolIcon :name="getIconName(event)" :size="24" />
             </span>
+            <div class="header-titles">
+              <span class="event-title">{{ getDescriptiveTitle(event) }}</span>
+              <div class="header-meta">
+                <span class="event-type-badge">{{ getEventTypeBadge(event.eventType) }}</span>
+                <span
+                  v-if="parsePayload(event.payload)?.success !== undefined"
+                  :class="['status-badge', parsePayload(event.payload)?.success ? 'status-success' : 'status-error']"
+                >
+                  {{ parsePayload(event.payload)?.success ? 'Success' : 'Failed' }}
+                </span>
+              </div>
+            </div>
           </div>
           <button class="close-btn" @click="emit('close')">×</button>
         </div>
@@ -413,12 +519,43 @@ onUnmounted(() => {
 
 .event-icon-large {
   font-size: 1.5rem;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
 }
 
-.event-type-badge {
+.header-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.event-title {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text-primary);
+  line-height: 1.3;
+}
+
+.header-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.event-type-badge {
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .status-badge {

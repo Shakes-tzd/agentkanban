@@ -201,6 +201,69 @@
       "Confirm inputSummary and filePaths display correctly"
     ],
     "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Enhance FeatureDetailModal functionality",
+    "steps": [],
+    "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Enhance ActivityDetailModal functionality",
+    "steps": [],
+    "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Enhance ActivityTimeline functionality",
+    "steps": [],
+    "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Enhance FeatureDetailModal functionality",
+    "steps": [],
+    "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Enhance FeatureDetailModal functionality",
+    "steps": [],
+    "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Enhance ActivityDetailModal functionality",
+    "steps": [],
+    "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Make stop.sh executable",
+    "steps": [],
+    "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Enhance smart-feature-match functionality",
+    "steps": [],
+    "passes": false,
+    "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Enhance session-start.sh functionality",
+    "steps": [],
+    "passes": false,
     "inProgress": true
   }
 ]

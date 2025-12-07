@@ -314,19 +314,124 @@ Respond with ONLY the feature name, no quotes or explanation."""
     return None
 
 
-def create_new_feature(features: list[dict], description: str, category: str = "functional") -> int:
+def generate_verification_steps(tool_name: str, tool_input: dict, description: str) -> list[str]:
+    """Generate verification steps based on the tool type and context."""
+    steps = []
+
+    if tool_name == "Edit" or tool_name == "Write":
+        file_path = tool_input.get("file_path", "")
+        if file_path:
+            filename = file_path.split("/")[-1]
+            steps.append(f"Verify changes in {filename} work correctly")
+        if ".py" in file_path:
+            steps.append("Run relevant tests or verify Python syntax")
+        elif ".ts" in file_path or ".vue" in file_path or ".tsx" in file_path:
+            steps.append("Check for TypeScript/build errors")
+        elif ".rs" in file_path:
+            steps.append("Run cargo build/check to verify Rust code")
+    elif tool_name == "Bash":
+        cmd = tool_input.get("command", "")
+        if "test" in cmd.lower() or "pytest" in cmd or "jest" in cmd:
+            steps.append("Ensure all tests pass")
+        elif "build" in cmd.lower():
+            steps.append("Verify build completes successfully")
+        elif "install" in cmd.lower():
+            steps.append("Confirm dependencies installed correctly")
+        else:
+            steps.append("Verify command produced expected output")
+    elif tool_name == "Task":
+        steps.append("Review agent task results")
+        steps.append("Verify the subtask was completed successfully")
+
+    # Always add completion reminder
+    steps.append("Run /complete-feature when done")
+
+    return steps if steps else ["Verify implementation", "Run /complete-feature when done"]
+
+
+def generate_completion_criteria(tool_name: str, tool_input: dict) -> dict:
+    """Generate appropriate completion criteria based on the initial tool call."""
+    if tool_name == "Edit" or tool_name == "Write":
+        file_path = tool_input.get("file_path", "")
+
+        # TypeScript/Vue files - need build to pass
+        if any(ext in file_path for ext in [".ts", ".tsx", ".vue"]):
+            return {
+                "type": "build",
+                "description": "Build must pass",
+                "success_required": True
+            }
+
+        # Rust files - need cargo build
+        if ".rs" in file_path:
+            return {
+                "type": "build",
+                "command_pattern": "cargo (build|check)",
+                "description": "Cargo build must pass",
+                "success_required": True
+            }
+
+        # Python files
+        if ".py" in file_path:
+            return {
+                "type": "any_success",
+                "description": "Successful execution",
+                "success_required": True
+            }
+
+        # Test files
+        if "test" in file_path.lower() or "spec" in file_path.lower():
+            return {
+                "type": "test",
+                "description": "Tests must pass",
+                "success_required": True
+            }
+
+    elif tool_name == "Bash":
+        cmd = tool_input.get("command", "").lower()
+        if any(kw in cmd for kw in ["test", "pytest", "jest"]):
+            return {"type": "test", "description": "Tests must pass", "success_required": True}
+        if any(kw in cmd for kw in ["build", "compile"]):
+            return {"type": "build", "description": "Build must pass", "success_required": True}
+
+    # Default: auto-complete after 3 successful work operations
+    return {
+        "type": "work_count",
+        "count": 3,
+        "description": "Auto-complete after sustained work",
+        "success_required": True
+    }
+
+
+def create_new_feature(
+    features: list[dict],
+    description: str,
+    category: str = "functional",
+    steps: list[str] | None = None,
+    completion_criteria: dict | None = None
+) -> int:
     """Create a new feature and return its index."""
     # Clear all inProgress
     for f in features:
         f["inProgress"] = False
 
+    # Generate default verification steps if none provided
+    if steps is None:
+        steps = ["Auto-tracked: will complete when criteria met"]
+
     new_feature = {
         "category": category,
         "description": description,
-        "steps": [],
+        "steps": steps,
         "passes": False,
-        "inProgress": True
+        "inProgress": True,
+        "workCount": 0  # Track number of successful operations
     }
+
+    # Add completion criteria if provided
+    if completion_criteria:
+        new_feature["completionCriteria"] = completion_criteria
+
     features.append(new_feature)
     return len(features) - 1
 
@@ -437,7 +542,11 @@ def main():
         elif "perf" in tool_context.lower() or "optim" in tool_context.lower():
             category = "performance"
 
-        new_idx = create_new_feature(features, new_desc, category)
+        # Generate context-specific verification steps and completion criteria
+        steps = generate_verification_steps(tool_name, tool_input, new_desc)
+        completion_criteria = generate_completion_criteria(tool_name, tool_input)
+
+        new_idx = create_new_feature(features, new_desc, category, steps, completion_criteria)
         save_feature_list(project_dir, features)
 
         print(json.dumps({

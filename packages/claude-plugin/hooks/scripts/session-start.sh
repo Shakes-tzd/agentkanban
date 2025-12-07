@@ -52,44 +52,46 @@ load_features() {
         local next_feature=$(jq -r '[.[] | select(.passes == false and .inProgress != true)][0].description // "None"' "$feature_file")
 
         if [ -n "$active_feature" ]; then
-            # Active feature exists - show it prominently
+            # Get completion criteria info
+            local criteria_type=$(jq -r '[.[] | select(.inProgress == true)][0].completionCriteria.type // "manual"' "$feature_file")
+            local work_count=$(jq '[.[] | select(.inProgress == true)][0].workCount // 0' "$feature_file")
+
+            # Active feature exists - show it with auto-completion info
             local context="## Active Feature
 
 **Currently Working On:** ${active_feature}
 
 **Progress:** ${completed}/${total} features complete (${percentage}%)
 
-**Important:** All tool calls in this session will be linked to this feature in AgentKanban.
+**Auto-Completion:** ${criteria_type} | Work count: ${work_count}
 
-**BEFORE doing different work:** If the user's request relates to a DIFFERENT feature, you MUST update \`inProgress\` to the correct feature first. Use \`/set-feature\` or manually update feature_list.json.
+All tool calls will be linked to this feature. Features auto-complete when criteria are met (build passes, tests pass, or work count threshold reached).
 
-**When Done:**
-1. Set \`inProgress: false\` and \`passes: true\` for the completed feature
-2. Pick the next feature or run /next-feature"
+---
+
+**Switching features:** The system auto-detects when you're working on a different feature and switches automatically based on AI classification.
+
+---"
             output_response "$context"
         else
-            # No active feature - show feature list and prompt to set one
+            # No active feature - auto-create will handle it
             local feature_summary=$(jq -r 'to_entries | .[:10] | .[] | "[\(.key)] \(if .value.passes then "✅" else "⬜" end) \(.value.description | .[0:60])"' "$feature_file" 2>/dev/null | head -10)
 
-            local context="## No Active Feature - Action Required
+            local context="## No Active Feature
 
 **Progress:** ${completed}/${total} features complete (${percentage}%)
 
 **Features:**
 ${feature_summary}
 
-**CRITICAL:** Before ANY work, identify which feature it relates to:
+**Auto-Mode Active:** When you start working, the system will:
+1. Auto-match your work to an existing feature (AI classification)
+2. Auto-create a new feature if no match found
+3. Auto-complete features when completion criteria are met
 
-1. **New feature work:** Run \`/next-feature\` or set \`inProgress: true\` on an incomplete feature
-2. **Fix/enhance completed feature:** Either reopen it (set \`passes: false\`) or create a follow-up
-3. **Unrelated work:** Create a new feature first
-
-**Commands:**
-- \`/next-feature\` - Auto-select next incomplete feature
-- \`/set-feature <name>\` - Activate specific feature (even completed ones)
-- \`/add-feature\` - Create new feature
-
-**Why This Matters:** Tool calls are ONLY linked to features when one has \`inProgress: true\`. Match your work to the right feature!"
+**Manual Commands (optional):**
+- \`/next-feature\` - Manually select next feature
+- \`/complete-feature\` - Force complete active feature"
             output_response "$context"
         fi
     else

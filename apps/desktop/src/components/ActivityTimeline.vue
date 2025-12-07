@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import ToolIcon from './icons/ToolIcon.vue'
+
 interface AgentEvent {
   id: number
   eventType: string
@@ -11,6 +13,21 @@ interface AgentEvent {
   createdAt: string
 }
 
+interface ParsedPayload {
+  command?: string
+  filePath?: string
+  pattern?: string
+  inputSummary?: string
+  preview?: string
+  description?: string
+  prompt?: string
+  messageType?: string
+  reason?: string
+  taskDescription?: string
+  subagentType?: string
+  [key: string]: unknown
+}
+
 defineProps<{
   events: AgentEvent[]
 }>()
@@ -19,19 +36,35 @@ const emit = defineEmits<{
   'event-click': [event: AgentEvent]
 }>()
 
-const eventIcons: Record<string, string> = {
-  SessionStart: '🚀',
-  SessionEnd: '🏁',
-  ToolUse: '🔧',
-  ToolCall: '🔧',
-  FeatureStarted: '📝',
-  FeatureCompleted: '✅',
-  Error: '❌',
-  Progress: '📊',
-  TranscriptUpdated: '📄',
-  UserQuery: '💬',
-  AgentStop: '🛑',
-  SubagentStop: '🤖',
+// Tool name to icon mapping
+const toolIconNames: Record<string, string> = {
+  Bash: 'terminal',
+  BashOutput: 'terminal-output',
+  Read: 'file',
+  Write: 'file-plus',
+  Edit: 'file-edit',
+  Grep: 'search',
+  Glob: 'folder-search',
+  Task: 'bot',
+  TodoWrite: 'check-square',
+  TodoRead: 'list',
+  WebFetch: 'globe',
+  WebSearch: 'search-globe',
+}
+
+// Event type to icon mapping (fallback)
+const eventIconNames: Record<string, string> = {
+  SessionStart: 'rocket',
+  SessionEnd: 'flag',
+  ToolCall: 'wrench',
+  ToolUse: 'wrench',
+  FeatureStarted: 'file-edit',
+  FeatureCompleted: 'check-square',
+  Error: 'x-circle',
+  TranscriptUpdated: 'message',
+  UserQuery: 'user',
+  AgentStop: 'stop',
+  SubagentStop: 'cpu',
 }
 
 const agentColors: Record<string, string> = {
@@ -43,8 +76,22 @@ const agentColors: Record<string, string> = {
   'unknown': '#888',
 }
 
-function getEventIcon(eventType: string): string {
-  return eventIcons[eventType] || '📌'
+function parsePayload(payload?: string): ParsedPayload | null {
+  if (!payload) return null
+  try {
+    return JSON.parse(payload)
+  } catch {
+    return null
+  }
+}
+
+function getIconName(event: AgentEvent): string {
+  // Prefer tool-specific icon
+  if (event.toolName && toolIconNames[event.toolName]) {
+    return toolIconNames[event.toolName]
+  }
+  // Fall back to event type icon
+  return eventIconNames[event.eventType] || 'wrench'
 }
 
 function getAgentColor(agent: string): string {
@@ -59,14 +106,165 @@ function formatTime(dateStr: string): string {
   })
 }
 
-function formatEventType(eventType: string): string {
-  return eventType.replace(/([A-Z])/g, ' $1').trim()
+function getDescriptiveTitle(event: AgentEvent): string {
+  const payload = parsePayload(event.payload)
+
+  // UserQuery - show prompt preview
+  if (event.eventType === 'UserQuery') {
+    const prompt = payload?.prompt || payload?.preview || ''
+    if (prompt) {
+      return truncate(prompt, 50)
+    }
+    return 'User Query'
+  }
+
+  // Session events
+  if (event.eventType === 'SessionStart') return 'Session Started'
+  if (event.eventType === 'SessionEnd') return 'Session Ended'
+  if (event.eventType === 'AgentStop') {
+    const reason = payload?.reason || 'completed'
+    return `Agent Stopped (${reason})`
+  }
+  if (event.eventType === 'SubagentStop') {
+    const task = payload?.taskDescription || payload?.subagentType || 'task'
+    return `Subagent: ${truncate(task, 40)}`
+  }
+
+  // TranscriptUpdated - use messageType or tool info
+  if (event.eventType === 'TranscriptUpdated') {
+    const msgType = payload?.messageType || event.toolName
+    if (msgType === 'tool_result' || event.toolName === 'ToolResult') {
+      return 'Tool Result'
+    }
+    if (msgType === 'tool_use') {
+      return 'Tool Use'
+    }
+    return msgType || 'Transcript Update'
+  }
+
+  // ToolCall - use tool name and context
+  if (event.eventType === 'ToolCall' && event.toolName) {
+    return getToolTitle(event.toolName, payload)
+  }
+
+  // Fallback
+  return event.toolName || event.eventType
+}
+
+function getToolTitle(toolName: string, payload: ParsedPayload | null): string {
+  switch (toolName) {
+    case 'Bash': {
+      const cmd = payload?.command || ''
+      if (cmd) {
+        // Extract just the command name and first arg
+        const parts = cmd.trim().split(/\s+/)
+        const cmdName = parts[0]
+        const preview = parts.slice(0, 3).join(' ')
+        return `$ ${truncate(preview, 40)}`
+      }
+      return 'Run Command'
+    }
+    case 'BashOutput':
+      return 'Check Background Output'
+    case 'Read': {
+      const file = payload?.filePath || ''
+      if (file) {
+        return `Read ${getFileName(file)}`
+      }
+      return 'Read File'
+    }
+    case 'Write': {
+      const file = payload?.filePath || ''
+      if (file) {
+        return `Write ${getFileName(file)}`
+      }
+      return 'Write File'
+    }
+    case 'Edit': {
+      const file = payload?.filePath || ''
+      if (file) {
+        return `Edit ${getFileName(file)}`
+      }
+      return 'Edit File'
+    }
+    case 'Grep': {
+      const pattern = payload?.pattern || ''
+      if (pattern) {
+        return `Search: ${truncate(pattern, 30)}`
+      }
+      return 'Search Code'
+    }
+    case 'Glob': {
+      const pattern = payload?.pattern || ''
+      if (pattern) {
+        return `Find: ${truncate(pattern, 30)}`
+      }
+      return 'Find Files'
+    }
+    case 'Task': {
+      const desc = payload?.taskDescription || payload?.description || ''
+      if (desc) {
+        return `Task: ${truncate(desc, 35)}`
+      }
+      return 'Run Task'
+    }
+    case 'TodoWrite':
+      return 'Update Todos'
+    case 'TodoRead':
+      return 'Read Todos'
+    case 'WebFetch':
+      return 'Fetch Web Page'
+    case 'WebSearch':
+      return 'Web Search'
+    default:
+      return toolName
+  }
+}
+
+function truncate(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str
+  return str.slice(0, maxLen - 1) + '…'
+}
+
+function getFileName(path: string): string {
+  const parts = path.split('/')
+  return parts[parts.length - 1] || path
+}
+
+function getEventTypeBadge(event: AgentEvent): string {
+  // Simplify event type for badge display
+  switch (event.eventType) {
+    case 'ToolCall':
+      return 'call'
+    case 'TranscriptUpdated':
+      return 'result'
+    case 'UserQuery':
+      return 'query'
+    case 'SessionStart':
+      return 'start'
+    case 'SessionEnd':
+      return 'end'
+    case 'AgentStop':
+      return 'stop'
+    case 'SubagentStop':
+      return 'agent'
+    default:
+      return event.eventType.toLowerCase()
+  }
 }
 
 function getProjectName(projectDir: string): string {
   if (!projectDir) return ''
   const parts = projectDir.split('/')
   return parts[parts.length - 1] || projectDir
+}
+
+function getSuccessStatus(event: AgentEvent): boolean | null {
+  const payload = parsePayload(event.payload)
+  if (payload?.success !== undefined) {
+    return payload.success as boolean
+  }
+  return null
 }
 </script>
 
@@ -75,40 +273,54 @@ function getProjectName(projectDir: string): string {
     <div class="timeline-header">
       <h2>Activity</h2>
     </div>
-    
+
     <div class="timeline-content">
       <div
         v-for="event in events"
         :key="event.id"
         class="timeline-item"
+        :class="{
+          'status-success': getSuccessStatus(event) === true,
+          'status-error': getSuccessStatus(event) === false
+        }"
         @click="emit('event-click', event)"
       >
         <div class="timeline-icon">
-          {{ getEventIcon(event.eventType) }}
+          <ToolIcon :name="getIconName(event)" :size="16" />
         </div>
-        
+
         <div class="timeline-body">
           <div class="timeline-meta">
-            <span
-              class="agent-name"
-              :style="{ color: getAgentColor(event.sourceAgent) }"
-            >
-              {{ event.sourceAgent }}
-            </span>
-            <span class="event-time">{{ formatTime(event.createdAt) }}</span>
+            <div class="meta-left">
+              <span class="event-type-badge">{{ getEventTypeBadge(event) }}</span>
+              <span
+                class="agent-name"
+                :style="{ color: getAgentColor(event.sourceAgent) }"
+              >
+                {{ event.sourceAgent }}
+              </span>
+            </div>
+            <div class="meta-right">
+              <span
+                v-if="getSuccessStatus(event) !== null"
+                :class="['status-indicator', getSuccessStatus(event) ? 'success' : 'error']"
+              >
+                {{ getSuccessStatus(event) ? '✓' : '✗' }}
+              </span>
+              <span class="event-time">{{ formatTime(event.createdAt) }}</span>
+            </div>
           </div>
-          
-          <p class="event-description">
-            {{ formatEventType(event.eventType) }}
-            <span v-if="event.toolName" class="tool-name">: {{ event.toolName }}</span>
+
+          <p class="event-title">
+            {{ getDescriptiveTitle(event) }}
           </p>
-          
+
           <p v-if="event.projectDir" class="project-name">
-            📁 {{ getProjectName(event.projectDir) }}
+            {{ getProjectName(event.projectDir) }}
           </p>
         </div>
       </div>
-      
+
       <div v-if="events.length === 0" class="empty-timeline">
         <p>No activity yet</p>
         <p class="hint">Events will appear here as agents work</p>
@@ -149,6 +361,7 @@ function getProjectName(projectDir: string): string {
   padding: 12px 16px;
   transition: background 0.2s;
   cursor: pointer;
+  border-left: 3px solid transparent;
 }
 
 .timeline-item:hover {
@@ -159,14 +372,34 @@ function getProjectName(projectDir: string): string {
   background: var(--card-bg);
 }
 
+.timeline-item.status-success {
+  border-left-color: var(--accent-green);
+}
+
+.timeline-item.status-error {
+  border-left-color: #f87171;
+}
+
 .timeline-icon {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 0.9rem;
+  background: var(--bg-tertiary);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+.timeline-item.status-success .timeline-icon {
+  color: var(--accent-green);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.timeline-item.status-error .timeline-icon {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
 }
 
 .timeline-body {
@@ -179,12 +412,49 @@ function getProjectName(projectDir: string): string {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 4px;
+  gap: 8px;
+}
+
+.meta-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meta-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.event-type-badge {
+  font-size: 0.65rem;
+  font-weight: 500;
+  padding: 2px 6px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .agent-name {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
+}
+
+.status-indicator {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.status-indicator.success {
+  color: var(--accent-green);
+}
+
+.status-indicator.error {
+  color: #f87171;
 }
 
 .event-time {
@@ -192,14 +462,12 @@ function getProjectName(projectDir: string): string {
   color: var(--text-muted);
 }
 
-.event-description {
+.event-title {
   font-size: 0.85rem;
   color: var(--text-primary);
-  margin-bottom: 4px;
-}
-
-.tool-name {
-  color: var(--accent-purple);
+  margin-bottom: 2px;
+  line-height: 1.4;
+  font-weight: 500;
 }
 
 .project-name {
