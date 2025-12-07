@@ -70,19 +70,43 @@ def extract_keywords(text: str) -> set[str]:
     return {w for w in words if w not in stop_words}
 
 
+def fuzzy_match(word1: str, word2: str) -> bool:
+    """Check if two words are similar (handles plurals, prefixes)."""
+    if word1 == word2:
+        return True
+    # Handle plurals and common suffixes
+    if word1.rstrip('s') == word2.rstrip('s'):
+        return True
+    if word1.rstrip('ing') == word2 or word1 == word2.rstrip('ing'):
+        return True
+    if word1.rstrip('ed') == word2 or word1 == word2.rstrip('ed'):
+        return True
+    # Check if one contains the other (min 4 chars)
+    if len(word1) >= 4 and len(word2) >= 4:
+        if word1 in word2 or word2 in word1:
+            return True
+    return False
+
+
 def similarity_score(keywords1: set[str], keywords2: set[str]) -> float:
-    """Calculate similarity between two keyword sets."""
+    """Calculate similarity between two keyword sets with fuzzy matching."""
     if not keywords1 or not keywords2:
         return 0.0
 
-    # Jaccard similarity
-    intersection = keywords1 & keywords2
-    union = keywords1 | keywords2
+    # Count fuzzy matches
+    matches = 0
+    for w1 in keywords1:
+        for w2 in keywords2:
+            if fuzzy_match(w1, w2):
+                matches += 1
+                break  # Count each keyword once
 
-    if not union:
+    # Similarity = matched / total input keywords
+    # Weighted towards input keywords (what we're looking for)
+    if not keywords1:
         return 0.0
 
-    return len(intersection) / len(union)
+    return matches / len(keywords1)
 
 
 def match_feature(tool_input: dict, features: list[dict], tool_name: str) -> tuple[int | None, float]:
@@ -181,10 +205,25 @@ def main():
 
     tool_name = hook_input.get("tool_name", "")
     tool_input = hook_input.get("tool_input", {})
-    project_dir = hook_input.get("cwd", os.getcwd())
 
-    # Skip certain tools that don't represent actual work
-    skip_tools = {"TodoRead", "TodoWrite", "Read", "Glob", "Grep", "WebSearch", "WebFetch"}
+    # Get project directory from environment (set by Claude Code)
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if not project_dir:
+        # Fallback: try to detect from tool input file paths
+        file_path = tool_input.get("file_path", "")
+        if file_path:
+            # Find the project root by looking for feature_list.json
+            path = Path(file_path)
+            for parent in [path] + list(path.parents):
+                if (parent / "feature_list.json").exists():
+                    project_dir = str(parent)
+                    break
+
+    if not project_dir:
+        project_dir = os.getcwd()
+
+    # Only skip TodoRead/TodoWrite which are meta-tools
+    skip_tools = {"TodoRead", "TodoWrite"}
     if tool_name in skip_tools:
         print('{"continue": true}')
         return
@@ -205,8 +244,8 @@ def main():
     # No active feature - try to match
     matched_idx, confidence = match_feature(tool_input, features, tool_name)
 
-    # Only auto-activate if confidence is high enough (>0.15)
-    if matched_idx is not None and confidence > 0.15:
+    # Auto-activate if at least one keyword matches (confidence > 0.3 = 1 of 3 keywords)
+    if matched_idx is not None and confidence >= 0.3:
         feature = features[matched_idx]
         description = feature.get("description", "Unknown")[:60]
         is_complete = feature.get("passes", False)

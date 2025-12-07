@@ -225,9 +225,24 @@ def main():
         print('{"continue": true}')
         return
 
-    # Get session_id and cwd from hook input (Claude Code provides these)
-    session_id = hook_input.get("session_id", "unknown")
-    project_dir = hook_input.get("cwd", os.getcwd())
+    # Get session_id from hook input or environment
+    session_id = hook_input.get("session_id") or os.environ.get("CLAUDE_SESSION_ID", "unknown")
+
+    # Get project directory from environment (Claude Code sets this)
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if not project_dir:
+        # Fallback: try to detect from tool input file paths
+        tool_input = hook_input.get("tool_input", {})
+        file_path = tool_input.get("file_path", "")
+        if file_path:
+            path = Path(file_path)
+            for parent in [path] + list(path.parents):
+                if (parent / "feature_list.json").exists():
+                    project_dir = str(parent)
+                    break
+
+    if not project_dir:
+        project_dir = os.getcwd()
 
     # Route to appropriate handler
     if hook_type == "PostToolUse":
