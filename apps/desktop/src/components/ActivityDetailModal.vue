@@ -370,6 +370,21 @@ onUnmounted(() => {
               </div>
             </div>
 
+            <!-- Session Start/End events -->
+            <div v-else-if="event.eventType === 'SessionStart'" class="tool-detail session-event">
+              <div class="session-info">
+                <span class="session-icon">🚀</span>
+                <span class="session-text">New coding session started</span>
+              </div>
+            </div>
+
+            <div v-else-if="event.eventType === 'SessionEnd'" class="tool-detail session-event">
+              <div class="session-info">
+                <span class="session-icon">🏁</span>
+                <span class="session-text">Session completed</span>
+              </div>
+            </div>
+
             <!-- Agent Stop event -->
             <div v-else-if="event.eventType === 'AgentStop' && parsePayload(event.payload)" class="tool-detail">
               <div v-if="parsePayload(event.payload)?.reason" class="detail-section">
@@ -853,5 +868,26 @@ onUnmounted(() => {
 .user-prompt {
   border-left: 4px solid var(--accent-blue);
   background: rgba(96, 165, 250, 0.1);
+}
+
+.session-event {
+  text-align: center;
+  padding: 24px !important;
+}
+
+.session-info {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.session-icon {
+  font-size: 1.5rem;
+}
+
+.session-text {
+  font-size: 1rem;
+  color: var(--text-secondary);
 }
 </style>

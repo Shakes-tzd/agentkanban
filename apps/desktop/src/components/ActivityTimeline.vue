@@ -290,34 +290,35 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
         </div>
 
         <div class="timeline-body">
-          <div class="timeline-meta">
-            <div class="meta-left">
-              <span class="event-type-badge">{{ getEventTypeBadge(event) }}</span>
-              <span
-                class="agent-name"
-                :style="{ color: getAgentColor(event.sourceAgent) }"
-              >
-                {{ event.sourceAgent }}
-              </span>
-            </div>
-            <div class="meta-right">
-              <span
-                v-if="getSuccessStatus(event) !== null"
-                :class="['status-indicator', getSuccessStatus(event) ? 'success' : 'error']"
-              >
-                {{ getSuccessStatus(event) ? '✓' : '✗' }}
-              </span>
-              <span class="event-time">{{ formatTime(event.createdAt) }}</span>
-            </div>
+          <!-- Primary: Event title (the actual content) -->
+          <div class="title-row">
+            <p class="event-title">
+              {{ getDescriptiveTitle(event) }}
+            </p>
+            <span class="event-time">{{ formatTime(event.createdAt) }}</span>
           </div>
 
-          <p class="event-title">
-            {{ getDescriptiveTitle(event) }}
-          </p>
-
-          <p v-if="event.projectDir" class="project-name">
-            {{ getProjectName(event.projectDir) }}
-          </p>
+          <!-- Secondary: Subtle metadata row -->
+          <div class="meta-row">
+            <span v-if="event.projectDir" class="project-name">
+              {{ getProjectName(event.projectDir) }}
+            </span>
+            <span class="meta-separator">•</span>
+            <span class="event-type-badge">{{ getEventTypeBadge(event) }}</span>
+            <span class="meta-separator">•</span>
+            <span
+              class="agent-name"
+              :style="{ color: getAgentColor(event.sourceAgent) }"
+            >
+              {{ event.sourceAgent }}
+            </span>
+            <span
+              v-if="getSuccessStatus(event) !== null"
+              :class="['status-indicator', getSuccessStatus(event) ? 'success' : 'error']"
+            >
+              {{ getSuccessStatus(event) ? '✓' : '✗' }}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -407,46 +408,66 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
   min-width: 0;
 }
 
-.timeline-meta {
+/* Primary row: Title + Time */
+.title-row {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  gap: 8px;
   margin-bottom: 4px;
-  gap: 8px;
 }
 
-.meta-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.event-title {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  line-height: 1.4;
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
 }
 
-.meta-right {
+.event-time {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* Secondary row: Subtle metadata */
+.meta-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+.meta-separator {
+  color: var(--text-muted);
+  font-size: 0.6rem;
+  opacity: 0.5;
+}
+
+.project-name {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
 }
 
 .event-type-badge {
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   font-weight: 500;
-  padding: 2px 6px;
-  background: var(--bg-tertiary);
-  border-radius: 4px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
+  text-transform: lowercase;
 }
 
 .agent-name {
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
+  font-size: 0.65rem;
+  font-weight: 500;
+  opacity: 0.8;
 }
 
 .status-indicator {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 600;
+  margin-left: auto;
 }
 
 .status-indicator.success {
@@ -455,27 +476,6 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
 
 .status-indicator.error {
   color: #f87171;
-}
-
-.event-time {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-}
-
-.event-title {
-  font-size: 0.85rem;
-  color: var(--text-primary);
-  margin-bottom: 2px;
-  line-height: 1.4;
-  font-weight: 500;
-}
-
-.project-name {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .empty-timeline {
