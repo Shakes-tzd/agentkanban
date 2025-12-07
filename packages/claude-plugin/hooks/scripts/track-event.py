@@ -95,6 +95,41 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str):
     # Get active feature
     active_feature = get_active_feature(project_dir)
 
+    # Build detailed payload based on tool type
+    payload = {
+        "filePaths": extract_file_paths(tool_input),
+        "inputSummary": summarize_input(tool_name, tool_input),
+        "success": not tool_result.get("is_error", False)
+    }
+
+    # Add tool-specific details
+    if tool_name == "Edit":
+        payload["oldString"] = (tool_input.get("old_string", "")[:200] + "...") if len(tool_input.get("old_string", "")) > 200 else tool_input.get("old_string", "")
+        payload["newString"] = (tool_input.get("new_string", "")[:200] + "...") if len(tool_input.get("new_string", "")) > 200 else tool_input.get("new_string", "")
+        payload["filePath"] = tool_input.get("file_path", "")
+    elif tool_name == "Bash":
+        payload["command"] = tool_input.get("command", "")[:500]
+        payload["description"] = tool_input.get("description", "")
+        # Include output preview if available
+        output = tool_result.get("output", "")
+        if output:
+            payload["outputPreview"] = (output[:300] + "...") if len(output) > 300 else output
+    elif tool_name == "Read":
+        payload["filePath"] = tool_input.get("file_path", "")
+        payload["offset"] = tool_input.get("offset")
+        payload["limit"] = tool_input.get("limit")
+    elif tool_name == "Write":
+        payload["filePath"] = tool_input.get("file_path", "")
+        content = tool_input.get("content", "")
+        payload["contentPreview"] = (content[:200] + "...") if len(content) > 200 else content
+    elif tool_name == "Grep":
+        payload["pattern"] = tool_input.get("pattern", "")
+        payload["path"] = tool_input.get("path", "")
+        payload["glob"] = tool_input.get("glob", "")
+    elif tool_name == "Glob":
+        payload["pattern"] = tool_input.get("pattern", "")
+        payload["path"] = tool_input.get("path", "")
+
     # Build event
     event = {
         "eventType": "ToolCall",
@@ -102,11 +137,7 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str):
         "sessionId": session_id,
         "projectDir": project_dir,
         "toolName": tool_name,
-        "payload": {
-            "filePaths": extract_file_paths(tool_input),
-            "inputSummary": summarize_input(tool_name, tool_input),
-            "success": not tool_result.get("is_error", False)
-        }
+        "payload": payload
     }
 
     if active_feature:

@@ -36,6 +36,19 @@ const emit = defineEmits<{
 
 const events = ref<AgentEvent[]>([])
 const loading = ref(false)
+const expandedEvents = ref<Set<number>>(new Set())
+
+function toggleExpand(eventId: number) {
+  if (expandedEvents.value.has(eventId)) {
+    expandedEvents.value.delete(eventId)
+  } else {
+    expandedEvents.value.add(eventId)
+  }
+}
+
+function isExpanded(eventId: number): boolean {
+  return expandedEvents.value.has(eventId)
+}
 
 const categoryColors: Record<string, string> = {
   functional: '#60a5fa',
@@ -66,8 +79,19 @@ function getEventIcon(eventType: string): string {
     'SessionEnd': '🏁',
     'FeatureCompleted': '✅',
     'Error': '❌',
+    'TranscriptUpdated': '💬',
   }
   return icons[eventType] || '📝'
+}
+
+function getToolIcon(toolName?: string): string {
+  if (!toolName) return ''
+  const icons: Record<string, string> = {
+    'Thinking': '🧠',
+    'Response': '💬',
+    'UserMessage': '👤',
+  }
+  return icons[toolName] || ''
 }
 
 interface ParsedPayload {
@@ -75,6 +99,21 @@ interface ParsedPayload {
   filePaths?: string[]
   success?: boolean
   featureDescription?: string
+  messageType?: string
+  preview?: string
+  // Tool-specific fields
+  command?: string
+  description?: string
+  outputPreview?: string
+  filePath?: string
+  oldString?: string
+  newString?: string
+  contentPreview?: string
+  pattern?: string
+  path?: string
+  glob?: string
+  offset?: number
+  limit?: number
   [key: string]: unknown
 }
 
@@ -209,13 +248,20 @@ onUnmounted(() => {
                 v-for="event in events"
                 :key="event.id"
                 class="event-item"
-                :class="getSuccessClass(parsePayload(event.payload)?.success)"
+                :class="[
+                  getSuccessClass(parsePayload(event.payload)?.success),
+                  { 'expanded': isExpanded(event.id) }
+                ]"
+                @click="toggleExpand(event.id)"
               >
                 <span class="event-icon">{{ getEventIcon(event.eventType) }}</span>
                 <div class="event-content">
                   <div class="event-header">
                     <span class="event-type">{{ event.eventType }}</span>
-                    <span class="event-time">{{ formatTime(event.createdAt) }}</span>
+                    <div class="event-header-right">
+                      <span class="event-time">{{ formatTime(event.createdAt) }}</span>
+                      <span class="expand-icon">{{ isExpanded(event.id) ? '▼' : '▶' }}</span>
+                    </div>
                   </div>
                   <div class="event-details">
                     <span class="event-agent">{{ event.sourceAgent }}</span>
@@ -227,11 +273,88 @@ onUnmounted(() => {
                       {{ parsePayload(event.payload)?.success ? '✓' : '✗' }}
                     </span>
                   </div>
-                  <!-- Tool call details from payload -->
-                  <div v-if="parsePayload(event.payload)?.inputSummary" class="event-summary">
-                    {{ parsePayload(event.payload)?.inputSummary }}
+                  <!-- Preview (collapsed) -->
+                  <div v-if="!isExpanded(event.id)" class="event-preview">
+                    <div v-if="parsePayload(event.payload)?.inputSummary" class="event-summary truncate">
+                      {{ parsePayload(event.payload)?.inputSummary }}
+                    </div>
+                    <div v-else-if="parsePayload(event.payload)?.preview" class="event-summary truncate">
+                      {{ parsePayload(event.payload)?.preview }}
+                    </div>
                   </div>
-                  <div v-if="parsePayload(event.payload)?.filePaths?.length" class="event-files">
+                  <!-- Full content (expanded) -->
+                  <div v-else class="event-expanded">
+                    <!-- Bash tool details -->
+                    <div v-if="event.toolName === 'Bash' && parsePayload(event.payload)?.command" class="tool-detail">
+                      <div class="detail-label">Command:</div>
+                      <pre class="detail-code">{{ parsePayload(event.payload)?.command }}</pre>
+                      <div v-if="parsePayload(event.payload)?.outputPreview" class="detail-section">
+                        <div class="detail-label">Output:</div>
+                        <pre class="detail-output">{{ parsePayload(event.payload)?.outputPreview }}</pre>
+                      </div>
+                    </div>
+                    <!-- Edit tool details -->
+                    <div v-else-if="event.toolName === 'Edit'" class="tool-detail">
+                      <div class="detail-label">File: <code>{{ parsePayload(event.payload)?.filePath }}</code></div>
+                      <div v-if="parsePayload(event.payload)?.oldString" class="detail-section">
+                        <div class="detail-label">Old:</div>
+                        <pre class="detail-code diff-old">{{ parsePayload(event.payload)?.oldString }}</pre>
+                      </div>
+                      <div v-if="parsePayload(event.payload)?.newString" class="detail-section">
+                        <div class="detail-label">New:</div>
+                        <pre class="detail-code diff-new">{{ parsePayload(event.payload)?.newString }}</pre>
+                      </div>
+                    </div>
+                    <!-- Read tool details -->
+                    <div v-else-if="event.toolName === 'Read'" class="tool-detail">
+                      <div class="detail-label">File: <code>{{ parsePayload(event.payload)?.filePath }}</code></div>
+                      <div v-if="parsePayload(event.payload)?.offset !== undefined" class="detail-meta">
+                        Lines {{ parsePayload(event.payload)?.offset }} - {{ (parsePayload(event.payload)?.offset || 0) + (parsePayload(event.payload)?.limit || 0) }}
+                      </div>
+                    </div>
+                    <!-- Grep tool details -->
+                    <div v-else-if="event.toolName === 'Grep'" class="tool-detail">
+                      <div class="detail-label">Pattern: <code>{{ parsePayload(event.payload)?.pattern }}</code></div>
+                      <div v-if="parsePayload(event.payload)?.path" class="detail-meta">Path: {{ parsePayload(event.payload)?.path }}</div>
+                      <div v-if="parsePayload(event.payload)?.glob" class="detail-meta">Glob: {{ parsePayload(event.payload)?.glob }}</div>
+                    </div>
+                    <!-- Glob tool details -->
+                    <div v-else-if="event.toolName === 'Glob'" class="tool-detail">
+                      <div class="detail-label">Pattern: <code>{{ parsePayload(event.payload)?.pattern }}</code></div>
+                      <div v-if="parsePayload(event.payload)?.path" class="detail-meta">Path: {{ parsePayload(event.payload)?.path }}</div>
+                    </div>
+                    <!-- Default: show summary/preview -->
+                    <div v-else>
+                      <div v-if="parsePayload(event.payload)?.inputSummary" class="event-summary">
+                        {{ parsePayload(event.payload)?.inputSummary }}
+                      </div>
+                      <div v-else-if="parsePayload(event.payload)?.preview" class="event-summary">
+                        {{ parsePayload(event.payload)?.preview }}
+                      </div>
+                    </div>
+                    <!-- Files list -->
+                    <div v-if="parsePayload(event.payload)?.filePaths?.length" class="event-files">
+                      <span class="files-label">Files:</span>
+                      <div class="files-list">
+                        <span
+                          v-for="(file, idx) in parsePayload(event.payload)?.filePaths"
+                          :key="idx"
+                          class="file-path"
+                        >
+                          {{ file }}
+                        </span>
+                      </div>
+                    </div>
+                    <!-- Raw payload toggle -->
+                    <div v-if="event.payload" class="event-raw">
+                      <details>
+                        <summary>Raw payload</summary>
+                        <pre>{{ JSON.stringify(parsePayload(event.payload), null, 2) }}</pre>
+                      </details>
+                    </div>
+                  </div>
+                  <!-- Files preview (collapsed) -->
+                  <div v-if="!isExpanded(event.id) && parsePayload(event.payload)?.filePaths?.length" class="event-files">
                     <span class="files-label">Files:</span>
                     <span
                       v-for="(file, idx) in parsePayload(event.payload)?.filePaths?.slice(0, 3)"
@@ -462,6 +585,16 @@ onUnmounted(() => {
   padding: 12px;
   background: var(--bg-tertiary);
   border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.event-item:hover {
+  background: var(--bg-secondary);
+}
+
+.event-item.expanded {
+  background: var(--bg-secondary);
 }
 
 .event-icon {
@@ -479,6 +612,18 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 4px;
+}
+
+.event-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.expand-icon {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  transition: transform 0.2s;
 }
 
 .event-type {
@@ -562,5 +707,115 @@ onUnmounted(() => {
 .more-files {
   font-size: 0.7rem;
   color: var(--text-muted);
+}
+
+.truncate {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.event-expanded .event-summary {
+  white-space: pre-wrap;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.event-expanded .files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.event-expanded .file-path {
+  display: block;
+  word-break: break-all;
+}
+
+.event-raw {
+  margin-top: 12px;
+}
+
+.event-raw summary {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.event-raw pre {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+/* Tool-specific detail styles */
+.tool-detail {
+  margin-top: 8px;
+}
+
+.detail-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.detail-label code {
+  color: var(--accent-blue);
+  background: var(--bg-primary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.detail-section {
+  margin-top: 8px;
+}
+
+.detail-meta {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.detail-code {
+  margin: 4px 0;
+  padding: 8px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.detail-output {
+  margin: 4px 0;
+  padding: 8px;
+  background: var(--bg-primary);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  color: var(--text-secondary);
+}
+
+.diff-old {
+  border-left: 3px solid #f87171;
+}
+
+.diff-new {
+  border-left: 3px solid var(--accent-green);
 }
 </style>

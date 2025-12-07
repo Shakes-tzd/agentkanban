@@ -189,5 +189,18 @@
     ],
     "passes": true,
     "inProgress": false
+  },
+  {
+    "category": "testing",
+    "description": "Verify end-to-end tool call tracking and UI display",
+    "steps": [
+      "Create test feature with inProgress: true",
+      "Perform tool calls (Read, Bash, Edit)",
+      "Check database for ToolCall events with correct feature_id",
+      "Verify Activity History shows tool calls in AgentKanban UI",
+      "Confirm inputSummary and filePaths display correctly"
+    ],
+    "passes": false,
+    "inProgress": true
   }
 ]

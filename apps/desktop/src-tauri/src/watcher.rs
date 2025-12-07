@@ -86,11 +86,19 @@ fn handle_transcript_change(
 ) {
     // Extract project dir from transcript path
     // Path format: ~/.claude/projects/{encoded-project}/session.jsonl
-    let project_dir = path
+    let encoded_project = path
         .parent()
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unknown".to_string());
+
+    // Decode the project path (Claude uses - as path separator)
+    // e.g., "-Users-shakes-DevProjects-agentkanban" -> "/Users/shakes/DevProjects/agentkanban"
+    let project_dir = if encoded_project.starts_with('-') {
+        encoded_project.replace('-', "/")
+    } else {
+        encoded_project
+    };
 
     // Parse session ID from filename
     let session_id = path
@@ -98,15 +106,21 @@ fn handle_transcript_change(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    // Find active feature in this project
+    let feature_id = get_active_feature_id(&project_dir);
+
+    // Get last transcript entry for context
+    let (tool_name, payload) = get_last_transcript_entry(path);
+
     let event = AgentEvent {
         id: None,
         event_type: "TranscriptUpdated".to_string(),
         source_agent: "claude-code".to_string(),
         session_id,
         project_dir,
-        tool_name: None,
-        payload: Some(path.to_string_lossy().to_string()),
-        feature_id: None,
+        tool_name,
+        payload,
+        feature_id,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
@@ -116,6 +130,136 @@ fn handle_transcript_change(
 
     // Broadcast to frontend
     let _ = event_tx.send(event);
+}
+
+/// Parse the last entry from a transcript JSONL file
+fn get_last_transcript_entry(path: &Path) -> (Option<String>, Option<String>) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (None, None),
+    };
+
+    // Get last non-empty line
+    let last_line = content.lines().filter(|l| !l.trim().is_empty()).last();
+    let last_line = match last_line {
+        Some(l) => l,
+        None => return (None, None),
+    };
+
+    // Parse as JSON
+    let entry: serde_json::Value = match serde_json::from_str(last_line) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+
+    // Extract useful info based on message type
+    let msg_type = entry["type"].as_str().unwrap_or("unknown");
+
+    match msg_type {
+        "user" => {
+            // User messages can have: text, image+text, or tool_result
+            let content = entry["message"]["content"].as_array();
+            if let Some(arr) = content {
+                // Look for text in any content item
+                for item in arr {
+                    if item["type"].as_str() == Some("text") {
+                        let text = item["text"].as_str()
+                            .unwrap_or("")
+                            .chars()
+                            .take(500)
+                            .collect::<String>();
+                        if !text.is_empty() {
+                            let payload = serde_json::json!({
+                                "messageType": "user",
+                                "preview": text
+                            });
+                            return (Some("UserMessage".to_string()), Some(payload.to_string()));
+                        }
+                    }
+                    if item["type"].as_str() == Some("tool_result") {
+                        let payload = serde_json::json!({
+                            "messageType": "tool_result"
+                        });
+                        return (Some("ToolResult".to_string()), Some(payload.to_string()));
+                    }
+                    if item["type"].as_str() == Some("image") {
+                        let payload = serde_json::json!({
+                            "messageType": "image",
+                            "preview": "📷 Image uploaded"
+                        });
+                        return (Some("Image".to_string()), Some(payload.to_string()));
+                    }
+                }
+            }
+            let payload = serde_json::json!({
+                "messageType": "user",
+                "preview": ""
+            });
+            (Some("UserMessage".to_string()), Some(payload.to_string()))
+        }
+        "assistant" => {
+            // Check if it's a tool use, text response, or thinking
+            let content = entry["message"]["content"].as_array();
+            if let Some(arr) = content {
+                for item in arr {
+                    if item["type"].as_str() == Some("tool_use") {
+                        let tool = item["name"].as_str().unwrap_or("unknown");
+                        let payload = serde_json::json!({
+                            "messageType": "tool_use",
+                            "tool": tool
+                        });
+                        return (Some(tool.to_string()), Some(payload.to_string()));
+                    }
+                    if item["type"].as_str() == Some("text") {
+                        let text = item["text"].as_str()
+                            .unwrap_or("")
+                            .chars()
+                            .take(500)
+                            .collect::<String>();
+                        let payload = serde_json::json!({
+                            "messageType": "assistant",
+                            "preview": text
+                        });
+                        return (Some("Response".to_string()), Some(payload.to_string()));
+                    }
+                    if item["type"].as_str() == Some("thinking") {
+                        let text = item["thinking"].as_str()
+                            .unwrap_or("")
+                            .chars()
+                            .take(500)
+                            .collect::<String>();
+                        let payload = serde_json::json!({
+                            "messageType": "thinking",
+                            "preview": text
+                        });
+                        return (Some("Thinking".to_string()), Some(payload.to_string()));
+                    }
+                }
+            }
+            (Some("Assistant".to_string()), None)
+        }
+        "result" => {
+            let payload = serde_json::json!({
+                "messageType": "tool_result"
+            });
+            (Some("ToolResult".to_string()), Some(payload.to_string()))
+        }
+        _ => (None, None),
+    }
+}
+
+/// Get the active feature ID (project_dir:index) from feature_list.json
+fn get_active_feature_id(project_dir: &str) -> Option<String> {
+    let feature_path = PathBuf::from(project_dir).join("feature_list.json");
+    let content = std::fs::read_to_string(&feature_path).ok()?;
+    let features: Vec<serde_json::Value> = serde_json::from_str(&content).ok()?;
+
+    for (index, feature) in features.iter().enumerate() {
+        if feature["inProgress"].as_bool().unwrap_or(false) {
+            return Some(format!("{}:{}", project_dir, index));
+        }
+    }
+    None
 }
 
 fn handle_feature_list_change(
