@@ -33,6 +33,7 @@ pub struct Feature {
     pub passes: bool,
     pub in_progress: bool,
     pub agent: Option<String>,
+    pub steps: Option<Vec<String>>,
     pub updated_at: String,
 }
 
@@ -134,6 +135,9 @@ impl Database {
         // Create index on feature_id (will only create if doesn't exist)
         conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_events_feature_id ON events(feature_id);")?;
 
+        // Migration: Add steps column to features table
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN steps TEXT", []);
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -217,9 +221,14 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         for feature in features {
+            let steps_json = feature
+                .steps
+                .as_ref()
+                .map(|s| serde_json::to_string(s).unwrap_or_default());
+
             conn.execute(
-                "INSERT OR REPLACE INTO features (id, project_dir, description, category, passes, in_progress, agent, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
+                "INSERT OR REPLACE INTO features (id, project_dir, description, category, passes, in_progress, agent, steps, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
                 params![
                     feature.id,
                     project_dir,
@@ -228,6 +237,7 @@ impl Database {
                     feature.passes,
                     feature.in_progress,
                     feature.agent,
+                    steps_json,
                 ],
             )?;
         }
@@ -238,9 +248,13 @@ impl Database {
     pub fn get_features(&self, project_dir: Option<&str>) -> Result<Vec<Feature>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
 
+        fn parse_steps(steps_json: Option<String>) -> Option<Vec<String>> {
+            steps_json.and_then(|s| serde_json::from_str(&s).ok())
+        }
+
         if let Some(dir) = project_dir {
             let mut stmt = conn.prepare(
-                "SELECT id, project_dir, description, category, passes, in_progress, agent, updated_at
+                "SELECT id, project_dir, description, category, passes, in_progress, agent, steps, updated_at
                  FROM features WHERE project_dir = ?1 ORDER BY id",
             )?;
 
@@ -254,7 +268,8 @@ impl Database {
                         passes: row.get(4)?,
                         in_progress: row.get(5)?,
                         agent: row.get(6)?,
-                        updated_at: row.get(7)?,
+                        steps: parse_steps(row.get(7)?),
+                        updated_at: row.get(8)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -262,7 +277,7 @@ impl Database {
             Ok(features)
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, project_dir, description, category, passes, in_progress, agent, updated_at
+                "SELECT id, project_dir, description, category, passes, in_progress, agent, steps, updated_at
                  FROM features ORDER BY project_dir, id",
             )?;
 
@@ -276,7 +291,8 @@ impl Database {
                         passes: row.get(4)?,
                         in_progress: row.get(5)?,
                         agent: row.get(6)?,
-                        updated_at: row.get(7)?,
+                        steps: parse_steps(row.get(7)?),
+                        updated_at: row.get(8)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;

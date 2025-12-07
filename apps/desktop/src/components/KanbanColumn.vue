@@ -7,6 +7,7 @@ interface Feature {
   passes: boolean
   inProgress: boolean
   agent?: string
+  steps?: string[]
   updatedAt: string
 }
 
@@ -74,7 +75,12 @@ function formatTime(dateStr: string): string {
         </div>
         
         <p class="card-description">{{ feature.description }}</p>
-        
+
+        <div v-if="feature.steps?.length" class="card-steps">
+          <span class="steps-icon">📋</span>
+          <span class="steps-count">{{ feature.steps.length }} steps</span>
+        </div>
+
         <div class="card-footer">
           <span class="card-time">{{ formatTime(feature.updatedAt) }}</span>
         </div>
@@ -170,6 +176,23 @@ function formatTime(dateStr: string): string {
 .card-footer {
   display: flex;
   justify-content: flex-end;
+}
+
+.card-steps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.steps-icon {
+  font-size: 0.7rem;
+}
+
+.steps-count {
+  color: var(--accent-blue);
 }
 
 .card-time {

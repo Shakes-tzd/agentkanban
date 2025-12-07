@@ -10,6 +10,7 @@ interface Feature {
   passes: boolean
   inProgress: boolean
   agent?: string
+  steps?: string[]
   updatedAt: string
 }
 
@@ -59,6 +60,7 @@ function formatTime(dateStr: string): string {
 function getEventIcon(eventType: string): string {
   const icons: Record<string, string> = {
     'ToolUse': '🔧',
+    'ToolCall': '🔧',
     'ToolResult': '📤',
     'SessionStart': '🚀',
     'SessionEnd': '🏁',
@@ -66,6 +68,29 @@ function getEventIcon(eventType: string): string {
     'Error': '❌',
   }
   return icons[eventType] || '📝'
+}
+
+interface ParsedPayload {
+  inputSummary?: string
+  filePaths?: string[]
+  success?: boolean
+  featureDescription?: string
+  [key: string]: unknown
+}
+
+function parsePayload(payload?: string): ParsedPayload | null {
+  if (!payload) return null
+  try {
+    return JSON.parse(payload)
+  } catch {
+    return null
+  }
+}
+
+function getSuccessClass(success?: boolean): string {
+  if (success === true) return 'success'
+  if (success === false) return 'failure'
+  return ''
 }
 
 function getStatusBadge(feature: Feature): { text: string; class: string } {
@@ -151,6 +176,22 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <!-- Steps checklist -->
+          <div v-if="feature.steps?.length" class="steps-section">
+            <h3 class="section-title">Verification Steps</h3>
+            <ul class="steps-list">
+              <li
+                v-for="(step, idx) in feature.steps"
+                :key="idx"
+                class="step-item"
+                :class="{ 'step-complete': feature.passes }"
+              >
+                <span class="step-checkbox">{{ feature.passes ? '✓' : '○' }}</span>
+                <span class="step-text">{{ step }}</span>
+              </li>
+            </ul>
+          </div>
+
           <div class="events-section">
             <h3 class="section-title">Activity History</h3>
 
@@ -168,6 +209,7 @@ onUnmounted(() => {
                 v-for="event in events"
                 :key="event.id"
                 class="event-item"
+                :class="getSuccessClass(parsePayload(event.payload)?.success)"
               >
                 <span class="event-icon">{{ getEventIcon(event.eventType) }}</span>
                 <div class="event-content">
@@ -178,6 +220,29 @@ onUnmounted(() => {
                   <div class="event-details">
                     <span class="event-agent">{{ event.sourceAgent }}</span>
                     <span v-if="event.toolName" class="event-tool">{{ event.toolName }}</span>
+                    <span
+                      v-if="parsePayload(event.payload)?.success !== undefined"
+                      :class="['event-status', parsePayload(event.payload)?.success ? 'status-success' : 'status-error']"
+                    >
+                      {{ parsePayload(event.payload)?.success ? '✓' : '✗' }}
+                    </span>
+                  </div>
+                  <!-- Tool call details from payload -->
+                  <div v-if="parsePayload(event.payload)?.inputSummary" class="event-summary">
+                    {{ parsePayload(event.payload)?.inputSummary }}
+                  </div>
+                  <div v-if="parsePayload(event.payload)?.filePaths?.length" class="event-files">
+                    <span class="files-label">Files:</span>
+                    <span
+                      v-for="(file, idx) in parsePayload(event.payload)?.filePaths?.slice(0, 3)"
+                      :key="idx"
+                      class="file-path"
+                    >
+                      {{ file.split('/').pop() }}
+                    </span>
+                    <span v-if="(parsePayload(event.payload)?.filePaths?.length || 0) > 3" class="more-files">
+                      +{{ (parsePayload(event.payload)?.filePaths?.length || 0) - 3 }} more
+                    </span>
                   </div>
                 </div>
               </div>
@@ -320,6 +385,46 @@ onUnmounted(() => {
   font-size: 0.8rem;
 }
 
+.steps-section {
+  margin-bottom: 20px;
+}
+
+.steps-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.step-item {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  align-items: flex-start;
+}
+
+.step-item.step-complete {
+  opacity: 0.7;
+}
+
+.step-checkbox {
+  font-size: 1rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.step-complete .step-checkbox {
+  color: var(--accent-green);
+}
+
+.step-text {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
 .events-section {
   border-top: 1px solid var(--border-color);
   padding-top: 20px;
@@ -397,5 +502,65 @@ onUnmounted(() => {
   padding: 2px 6px;
   background: var(--bg-secondary);
   border-radius: 4px;
+}
+
+.event-status {
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.status-success {
+  color: var(--accent-green);
+}
+
+.status-error {
+  color: #f87171;
+}
+
+.event-item.success {
+  border-left: 3px solid var(--accent-green);
+}
+
+.event-item.failure {
+  border-left: 3px solid #f87171;
+}
+
+.event-summary {
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-family: monospace;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.event-files {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.files-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.file-path {
+  font-size: 0.7rem;
+  padding: 2px 6px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  color: var(--accent-blue);
+  font-family: monospace;
+}
+
+.more-files {
+  font-size: 0.7rem;
+  color: var(--text-muted);
 }
 </style>

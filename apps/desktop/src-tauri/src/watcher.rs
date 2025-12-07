@@ -158,15 +158,26 @@ fn handle_feature_list_change(
     let parsed_features: Vec<Feature> = features
         .iter()
         .enumerate()
-        .map(|(i, f)| Feature {
-            id: format!("{}:{}", project_dir, i),
-            project_dir: project_dir.clone(),
-            description: f["description"].as_str().unwrap_or("").to_string(),
-            category: f["category"].as_str().unwrap_or("functional").to_string(),
-            passes: f["passes"].as_bool().unwrap_or(false),
-            in_progress: f["inProgress"].as_bool().unwrap_or(false),
-            agent: f["agent"].as_str().map(String::from),
-            updated_at: chrono::Utc::now().to_rfc3339(),
+        .map(|(i, f)| {
+            let steps = f["steps"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                });
+
+            Feature {
+                id: format!("{}:{}", project_dir, i),
+                project_dir: project_dir.clone(),
+                description: f["description"].as_str().unwrap_or("").to_string(),
+                category: f["category"].as_str().unwrap_or("functional").to_string(),
+                passes: f["passes"].as_bool().unwrap_or(false),
+                in_progress: f["inProgress"].as_bool().unwrap_or(false),
+                agent: f["agent"].as_str().map(String::from),
+                steps,
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            }
         })
         .collect();
 
