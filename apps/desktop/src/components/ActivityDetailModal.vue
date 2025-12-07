@@ -507,23 +507,25 @@ onUnmounted(() => {
   font-size: 0.8rem;
   font-family: 'SF Mono', Monaco, monospace;
   white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 200px;
+  word-break: break-word;
+  max-height: 300px;
   overflow-y: auto;
   color: var(--text-primary);
+  line-height: 1.5;
 }
 
 .detail-output {
   padding: 12px;
   background: var(--bg-primary);
   border-radius: 6px;
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   font-family: 'SF Mono', Monaco, monospace;
   white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 250px;
+  word-break: break-word;
+  max-height: 400px;
   overflow-y: auto;
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  line-height: 1.5;
 }
 
 .diff-old {
