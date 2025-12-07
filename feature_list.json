@@ -175,7 +175,19 @@
       "Verify ToolCall events include correct featureId",
       "Verify Activity History shows linked tool calls"
     ],
-    "passes": false,
-    "inProgress": true
+    "passes": true,
+    "inProgress": false
+  },
+  {
+    "category": "ui",
+    "description": "Enhanced tool call and feature details display",
+    "steps": [
+      "Display inputSummary, filePaths, success status in Activity History",
+      "Show step count on kanban cards",
+      "Display verification steps checklist in feature detail modal",
+      "Add visual indicators for success/failure on tool call events"
+    ],
+    "passes": true,
+    "inProgress": false
   }
 ]
