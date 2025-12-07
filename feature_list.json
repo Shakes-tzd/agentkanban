@@ -171,10 +171,11 @@
     "steps": [
       "Fix track-event.py to read session_id from hook input JSON",
       "Fix track-event.py to read cwd from hook input JSON",
+      "Fix featureId format to use project_dir:index instead of description",
       "Verify ToolCall events include correct featureId",
       "Verify Activity History shows linked tool calls"
     ],
-    "passes": true,
-    "inProgress": false
+    "passes": false,
+    "inProgress": true
   }
 ]

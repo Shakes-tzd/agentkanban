@@ -20,16 +20,22 @@ SYNC_SERVER = os.environ.get("AGENTKANBAN_SERVER", "http://127.0.0.1:4000")
 
 
 def get_active_feature(project_dir: str) -> dict | None:
-    """Get the currently active feature (inProgress: true)."""
+    """Get the currently active feature (inProgress: true).
+
+    Returns feature with ID in format 'project_dir:index' to match database storage.
+    """
     feature_file = Path(project_dir) / "feature_list.json"
     if not feature_file.exists():
         return None
 
     try:
         features = json.loads(feature_file.read_text())
-        for feature in features:
+        for index, feature in enumerate(features):
             if feature.get("inProgress"):
+                # ID format must match database: project_dir:index
+                feature_id = f"{project_dir}:{index}"
                 return {
+                    "id": feature_id,
                     "description": feature.get("description"),
                     "category": feature.get("category", "functional")
                 }
@@ -104,8 +110,9 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str):
     }
 
     if active_feature:
-        event["featureId"] = active_feature["description"]
+        event["featureId"] = active_feature["id"]
         event["payload"]["featureCategory"] = active_feature["category"]
+        event["payload"]["featureDescription"] = active_feature["description"]
 
     send_event(event)
 
@@ -149,7 +156,8 @@ def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
 
     active_feature = get_active_feature(project_dir)
     if active_feature:
-        event["featureId"] = active_feature["description"]
+        event["featureId"] = active_feature["id"]
+        event["payload"]["featureDescription"] = active_feature["description"]
 
     send_event(event)
 
