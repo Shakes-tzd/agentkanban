@@ -2,7 +2,10 @@
   "name": "agentkanban",
   "version": "0.1.0",
   "description": "Long-running agent workflow with persistent task management",
-  "author": "AgentKanban",
+  "author": {
+    "name": "AgentKanban",
+    "url": "https://github.com/Shakes-tzd/agentkanban"
+  },
   "homepage": "https://agentkanban.com",
   "repository": "https://github.com/Shakes-tzd/agentkanban",
   "license": "MIT",
