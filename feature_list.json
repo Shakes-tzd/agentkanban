@@ -151,5 +151,18 @@
     ],
     "passes": true,
     "inProgress": false
+  },
+  {
+    "category": "functional",
+    "description": "Different projects have their own separate kanban boards",
+    "steps": [
+      "Add project selector dropdown in the UI header",
+      "Store features per project in database with project_id foreign key",
+      "Filter kanban board to show only selected project's features",
+      "Add ability to switch between projects without restart",
+      "Persist last selected project in config"
+    ],
+    "passes": true,
+    "inProgress": false
   }
 ]

@@ -63,6 +63,7 @@ pub struct Config {
     pub watched_projects: Vec<String>,
     pub sync_server_port: u16,
     pub notifications_enabled: bool,
+    pub selected_project: Option<String>,
 }
 
 impl Default for Config {
@@ -71,6 +72,7 @@ impl Default for Config {
             watched_projects: vec![],
             sync_server_port: 4000,
             notifications_enabled: true,
+            selected_project: None,
         }
     }
 }
@@ -396,5 +398,18 @@ impl Database {
             [json],
         )?;
         Ok(())
+    }
+
+    pub fn get_projects(&self) -> Result<Vec<String>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT project_dir FROM features ORDER BY project_dir",
+        )?;
+
+        let projects = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+
+        Ok(projects)
     }
 }

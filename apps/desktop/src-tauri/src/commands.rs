@@ -40,6 +40,11 @@ pub async fn get_stats(db: State<'_, DbState>) -> Result<Stats, String> {
 }
 
 #[tauri::command]
+pub async fn get_projects(db: State<'_, DbState>) -> Result<Vec<String>, String> {
+    db.0.get_projects().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn scan_projects() -> Result<Vec<String>, String> {
     let home = dirs::home_dir().ok_or("No home directory")?;
     let mut projects = vec![];

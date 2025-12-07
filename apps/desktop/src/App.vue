@@ -37,9 +37,17 @@ interface Stats {
   activeSessions: number
 }
 
+interface Config {
+  watchedProjects: string[]
+  syncServerPort: number
+  notificationsEnabled: boolean
+  selectedProject: string | null
+}
+
 const features = ref<Feature[]>([])
 const events = ref<AgentEvent[]>([])
 const stats = ref<Stats>({ total: 0, completed: 0, inProgress: 0, percentage: 0, activeSessions: 0 })
+const projects = ref<string[]>([])
 const selectedProject = ref<string | null>(null)
 const loading = ref(true)
 const selectedFeature = ref<Feature | null>(null)
@@ -65,19 +73,40 @@ const doneFeatures = computed(() =>
 async function loadData() {
   try {
     loading.value = true
-    const [featuresData, eventsData, statsData] = await Promise.all([
+    const [featuresData, eventsData, statsData, projectsData] = await Promise.all([
       invoke<Feature[]>('get_features', { projectDir: selectedProject.value }),
       invoke<AgentEvent[]>('get_events', { limit: 50 }),
       invoke<Stats>('get_stats'),
+      invoke<string[]>('get_projects'),
     ])
     features.value = featuresData
     events.value = eventsData
     stats.value = statsData
+    projects.value = projectsData
   } catch (e) {
     console.error('Failed to load data:', e)
   } finally {
     loading.value = false
   }
+}
+
+async function selectProject(projectDir: string | null) {
+  selectedProject.value = projectDir
+  // Save to config
+  try {
+    const config = await invoke<Config>('get_config')
+    config.selectedProject = projectDir
+    await invoke('save_config', { config })
+  } catch (e) {
+    console.error('Failed to save selected project:', e)
+  }
+  await loadData()
+}
+
+function getProjectName(projectDir: string): string {
+  // Extract just the folder name from the full path
+  const parts = projectDir.split('/')
+  return parts[parts.length - 1] || projectDir
 }
 
 async function scanProjects() {
@@ -91,6 +120,16 @@ async function scanProjects() {
 }
 
 onMounted(async () => {
+  // Load saved project selection
+  try {
+    const config = await invoke<Config>('get_config')
+    if (config.selectedProject) {
+      selectedProject.value = config.selectedProject
+    }
+  } catch (e) {
+    console.error('Failed to load config:', e)
+  }
+
   await loadData()
 
   // Listen for real-time updates
@@ -117,6 +156,21 @@ onMounted(async () => {
     <header>
       <div class="header-left">
         <h1>🎯 AgentKanban</h1>
+        <div class="project-selector">
+          <select
+            :value="selectedProject || ''"
+            @change="selectProject(($event.target as HTMLSelectElement).value || null)"
+          >
+            <option value="">All Projects</option>
+            <option
+              v-for="project in projects"
+              :key="project"
+              :value="project"
+            >
+              {{ getProjectName(project) }}
+            </option>
+          </select>
+        </div>
       </div>
       <StatsBar :stats="stats" />
     </header>
@@ -191,9 +245,36 @@ header {
   border-bottom: 1px solid var(--border-color);
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
 .header-left h1 {
   font-size: 1.25rem;
   font-weight: 600;
+}
+
+.project-selector select {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  min-width: 180px;
+}
+
+.project-selector select:hover {
+  border-color: var(--accent-blue);
+}
+
+.project-selector select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.2);
 }
 
 main {

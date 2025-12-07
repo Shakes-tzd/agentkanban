@@ -122,6 +122,7 @@ fn main() {
             commands::get_feature_events,
             commands::get_sessions,
             commands::get_stats,
+            commands::get_projects,
             commands::scan_projects,
             commands::watch_project,
             commands::get_config,
