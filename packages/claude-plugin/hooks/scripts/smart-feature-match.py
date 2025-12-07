@@ -255,6 +255,82 @@ def activate_feature(features: list[dict], index: int, reopen_if_complete: bool 
     return action
 
 
+def generate_feature_description(tool_context: str, tool_name: str, tool_input: dict) -> str:
+    """Generate a feature description based on tool context."""
+    # Try to create a meaningful description from the tool input
+    if tool_name == "Edit" or tool_name == "Write":
+        file_path = tool_input.get("file_path", "")
+        if file_path:
+            # Extract meaningful path components
+            parts = file_path.split("/")
+            # Find relevant parts (skip common dirs)
+            relevant = [p for p in parts if p not in {"src", "lib", "app", "components", ""}]
+            if relevant:
+                component = relevant[-1].replace(".py", "").replace(".ts", "").replace(".vue", "").replace(".rs", "")
+                return f"Enhance {component} functionality"
+    elif tool_name == "Bash":
+        desc = tool_input.get("description", "")
+        if desc:
+            return desc[:60]
+        cmd = tool_input.get("command", "")
+        if "test" in cmd.lower():
+            return "Add or fix tests"
+        if "build" in cmd.lower():
+            return "Build and deployment updates"
+        if "install" in cmd.lower():
+            return "Dependency management"
+    elif tool_name == "Task":
+        desc = tool_input.get("description", "")
+        if desc:
+            return desc[:60]
+
+    # Fallback: use first line of context
+    first_line = tool_context.split("\n")[0] if tool_context else "Miscellaneous work"
+    return first_line[:60] if first_line else "Miscellaneous work"
+
+
+def generate_feature_with_ai(tool_context: str) -> str | None:
+    """Use Claude CLI to generate a good feature description."""
+    prompt = f"""Based on this tool call, suggest a concise feature name (max 60 chars).
+The feature should describe what's being built or improved.
+
+Tool call:
+{tool_context}
+
+Respond with ONLY the feature name, no quotes or explanation."""
+
+    try:
+        result = subprocess.run(
+            ["claude", "--model", "haiku", "-p", prompt],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            env={**os.environ, "CLAUDE_CODE_ENTRYPOINT": "hook"}
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()[:60]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def create_new_feature(features: list[dict], description: str, category: str = "functional") -> int:
+    """Create a new feature and return its index."""
+    # Clear all inProgress
+    for f in features:
+        f["inProgress"] = False
+
+    new_feature = {
+        "category": category,
+        "description": description,
+        "steps": [],
+        "passes": False,
+        "inProgress": True
+    }
+    features.append(new_feature)
+    return len(features) - 1
+
+
 def main():
     try:
         hook_input = json.load(sys.stdin)
@@ -314,19 +390,21 @@ def main():
         confidence = int(score * 100)
         reason = "keyword match"
 
-    # Decide whether to activate
-    # Higher threshold for switching from an already active feature
+    # Decide whether to activate or create
     current_active = next((i for i, f in enumerate(features) if f.get("inProgress")), None)
 
-    if matched_idx is not None:
+    # Only consider auto-actions for "work" tools (not read-only)
+    is_work_tool = tool_name in {"Edit", "Write", "Bash", "Task"}
+
+    if matched_idx is not None and confidence >= 30:
         should_switch = False
 
         if current_active is None:
             # No active feature - activate if confidence >= 30%
-            should_switch = confidence >= 30
-        elif current_active != matched_idx:
+            should_switch = True
+        elif current_active != matched_idx and confidence >= 70:
             # Different feature matched - only switch if high confidence
-            should_switch = confidence >= 70
+            should_switch = True
 
         if should_switch:
             feature = features[matched_idx]
@@ -342,6 +420,33 @@ def main():
                 }
             }))
             return
+
+    # AUTO-CREATE: If confidence is low and this is a work tool, create new feature
+    if is_work_tool and confidence < 30:
+        # Try AI-generated description first, fallback to heuristics
+        new_desc = generate_feature_with_ai(tool_context)
+        if not new_desc:
+            new_desc = generate_feature_description(tool_context, tool_name, tool_input)
+
+        # Determine category based on tool/context
+        category = "functional"
+        if "test" in tool_context.lower():
+            category = "testing"
+        elif "security" in tool_context.lower() or "auth" in tool_context.lower():
+            category = "security"
+        elif "perf" in tool_context.lower() or "optim" in tool_context.lower():
+            category = "performance"
+
+        new_idx = create_new_feature(features, new_desc, category)
+        save_feature_list(project_dir, features)
+
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": f"**New feature created:** \"{new_desc}\" (auto-detected from {tool_name})"
+            }
+        }))
+        return
 
     print('{"hookSpecificOutput": {"hookEventName": "PreToolUse"}}')
 
