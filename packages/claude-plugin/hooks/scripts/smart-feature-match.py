@@ -403,6 +403,33 @@ def generate_completion_criteria(tool_name: str, tool_input: dict) -> dict:
     }
 
 
+def find_similar_feature(features: list[dict], description: str) -> int | None:
+    """Find an existing feature with a very similar description."""
+    desc_lower = description.lower()
+    desc_words = set(desc_lower.split())
+
+    for i, f in enumerate(features):
+        existing_desc = f.get("description", "").lower()
+
+        # Exact match (case-insensitive)
+        if existing_desc == desc_lower:
+            return i
+
+        # High word overlap (> 60%)
+        existing_words = set(existing_desc.split())
+        if desc_words and existing_words:
+            overlap = len(desc_words & existing_words)
+            max_len = max(len(desc_words), len(existing_words))
+            if overlap / max_len > 0.6:
+                return i
+
+        # Check if one is a subset of the other (prefix/suffix match)
+        if desc_lower in existing_desc or existing_desc in desc_lower:
+            return i
+
+    return None
+
+
 def create_new_feature(
     features: list[dict],
     description: str,
@@ -411,6 +438,15 @@ def create_new_feature(
     completion_criteria: dict | None = None
 ) -> int:
     """Create a new feature and return its index."""
+    # Check for similar existing feature first
+    similar_idx = find_similar_feature(features, description)
+    if similar_idx is not None:
+        # Reuse the existing feature instead of creating duplicate
+        for f in features:
+            f["inProgress"] = False
+        features[similar_idx]["inProgress"] = True
+        return similar_idx
+
     # Clear all inProgress
     for f in features:
         f["inProgress"] = False
@@ -498,8 +534,9 @@ def main():
     # Decide whether to activate or create
     current_active = next((i for i, f in enumerate(features) if f.get("inProgress")), None)
 
-    # Only consider auto-actions for "work" tools (not read-only)
-    is_work_tool = tool_name in {"Edit", "Write", "Bash", "Task"}
+    # Only consider auto-actions for "constructive" tools (not read-only or diagnostic)
+    # Exclude Bash since most commands are exploratory/diagnostic
+    is_constructive_tool = tool_name in {"Edit", "Write", "Task"}
 
     if matched_idx is not None and confidence >= 30:
         should_switch = False
@@ -526,8 +563,8 @@ def main():
             }))
             return
 
-    # AUTO-CREATE: If confidence is low and this is a work tool, create new feature
-    if is_work_tool and confidence < 30:
+    # AUTO-CREATE: If confidence is low and this is a constructive tool, create new feature
+    if is_constructive_tool and confidence < 30:
         # Try AI-generated description first, fallback to heuristics
         new_desc = generate_feature_with_ai(tool_context)
         if not new_desc:

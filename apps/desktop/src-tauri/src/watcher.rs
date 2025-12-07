@@ -112,6 +112,11 @@ fn handle_transcript_change(
     // Get last transcript entry for context
     let (tool_name, payload) = get_last_transcript_entry(path);
 
+    // Skip creating event if no useful data was extracted
+    if tool_name.is_none() && payload.is_none() {
+        return;
+    }
+
     let event = AgentEvent {
         id: None,
         event_type: "TranscriptUpdated".to_string(),

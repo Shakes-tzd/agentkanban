@@ -270,9 +270,9 @@ onUnmounted(() => {
               <span class="meta-label">Project:</span>
               <span class="meta-value">{{ getProjectName(event.projectDir) }}</span>
             </div>
-            <div v-if="event.featureId" class="meta-item">
+            <div v-if="event.featureId || parsePayload(event.payload)?.featureDescription" class="meta-item">
               <span class="meta-label">Feature:</span>
-              <code class="meta-value">{{ event.featureId }}</code>
+              <span class="meta-value feature-name">{{ parsePayload(event.payload)?.featureDescription || event.featureId }}</span>
             </div>
             <div class="meta-item">
               <span class="meta-label">Session:</span>
@@ -644,6 +644,18 @@ onUnmounted(() => {
   background: var(--bg-primary);
   padding: 2px 6px;
   border-radius: 4px;
+}
+
+.feature-name {
+  background: var(--accent-purple);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-content {
