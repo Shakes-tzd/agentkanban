@@ -290,7 +290,7 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
         </div>
 
         <div class="timeline-body">
-          <!-- Primary: Event title (the actual content) -->
+          <!-- Primary: Event title -->
           <div class="title-row">
             <p class="event-title">
               {{ getDescriptiveTitle(event) }}
@@ -298,26 +298,16 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
             <span class="event-time">{{ formatTime(event.createdAt) }}</span>
           </div>
 
-          <!-- Secondary: Subtle metadata row -->
+          <!-- Secondary: Minimal metadata - just project + colored agent dot -->
           <div class="meta-row">
             <span v-if="event.projectDir" class="project-name">
               {{ getProjectName(event.projectDir) }}
             </span>
-            <span class="meta-separator">•</span>
-            <span class="event-type-badge">{{ getEventTypeBadge(event) }}</span>
-            <span class="meta-separator">•</span>
             <span
-              class="agent-name"
-              :style="{ color: getAgentColor(event.sourceAgent) }"
-            >
-              {{ event.sourceAgent }}
-            </span>
-            <span
-              v-if="getSuccessStatus(event) !== null"
-              :class="['status-indicator', getSuccessStatus(event) ? 'success' : 'error']"
-            >
-              {{ getSuccessStatus(event) ? '✓' : '✗' }}
-            </span>
+              class="agent-dot"
+              :style="{ background: getAgentColor(event.sourceAgent) }"
+              :title="event.sourceAgent"
+            ></span>
           </div>
         </div>
       </div>
@@ -432,50 +422,24 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
   flex-shrink: 0;
 }
 
-/* Secondary row: Subtle metadata */
+/* Secondary row: Minimal metadata */
 .meta-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.meta-separator {
-  color: var(--text-muted);
-  font-size: 0.6rem;
-  opacity: 0.5;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .project-name {
   font-size: 0.7rem;
-  color: var(--text-secondary);
-}
-
-.event-type-badge {
-  font-size: 0.6rem;
-  font-weight: 500;
   color: var(--text-muted);
-  text-transform: lowercase;
 }
 
-.agent-name {
-  font-size: 0.65rem;
-  font-weight: 500;
-  opacity: 0.8;
-}
-
-.status-indicator {
-  font-size: 0.7rem;
-  font-weight: 600;
-  margin-left: auto;
-}
-
-.status-indicator.success {
-  color: var(--accent-green);
-}
-
-.status-indicator.error {
-  color: #f87171;
+.agent-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .empty-timeline {
