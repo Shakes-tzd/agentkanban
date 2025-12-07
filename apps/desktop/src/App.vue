@@ -51,6 +51,11 @@ const projects = ref<string[]>([])
 const selectedProject = ref<string | null>(null)
 const loading = ref(true)
 const selectedFeature = ref<Feature | null>(null)
+const sidebarCollapsed = ref(false)
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+}
 
 function openFeatureDetail(feature: Feature) {
   selectedFeature.value = feature
@@ -175,7 +180,7 @@ onMounted(async () => {
       <StatsBar :stats="stats" />
     </header>
 
-    <main v-if="!loading">
+    <main v-if="!loading" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
       <div class="board-container">
         <KanbanBoard
           :todo="todoFeatures"
@@ -184,8 +189,16 @@ onMounted(async () => {
           @feature-click="openFeatureDetail"
         />
       </div>
-      <aside class="sidebar">
-        <ActivityTimeline :events="events" />
+      <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+        <button class="sidebar-toggle" @click="toggleSidebar" :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'">
+          {{ sidebarCollapsed ? '◀' : '▶' }}
+        </button>
+        <div class="sidebar-content" v-show="!sidebarCollapsed">
+          <ActivityTimeline :events="events" />
+        </div>
+        <div class="collapsed-label" v-show="sidebarCollapsed">
+          <span>Activity</span>
+        </div>
       </aside>
     </main>
 
@@ -282,6 +295,11 @@ main {
   grid-template-columns: 1fr 320px;
   flex: 1;
   overflow: hidden;
+  transition: grid-template-columns 0.3s ease;
+}
+
+main.sidebar-collapsed {
+  grid-template-columns: 1fr 40px;
 }
 
 .board-container {
@@ -296,6 +314,58 @@ main {
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 65px);
+  position: relative;
+  transition: width 0.3s ease;
+}
+
+.sidebar.collapsed {
+  width: 40px;
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-toggle {
+  position: absolute;
+  top: 12px;
+  left: -12px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  z-index: 10;
+  transition: all 0.2s;
+}
+
+.sidebar-toggle:hover {
+  background: var(--accent-blue);
+  color: white;
+  border-color: var(--accent-blue);
+}
+
+.collapsed-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .loading {
