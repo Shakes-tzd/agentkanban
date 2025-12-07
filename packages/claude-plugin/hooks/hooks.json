@@ -1,32 +1,48 @@
 {
-  "hooks": [
-    {
-      "name": "SessionStart",
-      "script": "scripts/session-start.sh",
-      "timeout_ms": 5000,
-      "continue_on_error": true,
-      "description": "Load feature context and notify server on session start"
-    },
-    {
-      "name": "SessionEnd",
-      "script": "scripts/session-end.sh",
-      "timeout_ms": 2000,
-      "continue_on_error": true,
-      "description": "Notify server on session end"
-    },
-    {
-      "name": "PostToolUse",
-      "script": "scripts/post-tool-use.sh",
-      "timeout_ms": 3000,
-      "continue_on_error": true,
-      "description": "Track all tool calls and link to active feature"
-    },
-    {
-      "name": "PreToolUse",
-      "script": "scripts/pre-tool-use.sh",
-      "timeout_ms": 2000,
-      "continue_on_error": false,
-      "description": "Validate feature_list.json edits"
-    }
-  ]
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-start.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/session-end.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/post-tool-use.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/pre-tool-use.sh"
+          }
+        ]
+      }
+    ]
+  }
 }
