@@ -539,14 +539,9 @@ def main():
     is_constructive_tool = tool_name in {"Edit", "Write", "Task"}
 
     if matched_idx is not None and confidence >= 30:
-        should_switch = False
-
-        if current_active is None:
-            # No active feature - activate if confidence >= 30%
-            should_switch = True
-        elif current_active != matched_idx and confidence >= 70:
-            # Different feature matched - only switch if high confidence
-            should_switch = True
+        # If a feature is matched with reasonable confidence, it should be In Progress
+        # Rule: Any feature receiving events should be actively worked on
+        should_switch = current_active is None or current_active != matched_idx
 
         if should_switch:
             feature = features[matched_idx]
