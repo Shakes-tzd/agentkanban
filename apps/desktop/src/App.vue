@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import KanbanBoard from './components/KanbanBoard.vue'
@@ -54,6 +54,7 @@ const loading = ref(true)
 const selectedFeature = ref<Feature | null>(null)
 const selectedEvent = ref<AgentEvent | null>(null)
 const sidebarCollapsed = ref(false)
+let pollInterval: ReturnType<typeof setInterval> | null = null
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
@@ -163,6 +164,30 @@ onMounted(async () => {
   await listen('scan-requested', async () => {
     await scanProjects()
   })
+
+  // Poll for new events every 2 seconds (hooks write directly to SQLite)
+  pollInterval = setInterval(async () => {
+    try {
+      const [eventsData, statsData] = await Promise.all([
+        invoke<AgentEvent[]>('get_events', { limit: 50 }),
+        invoke<Stats>('get_stats'),
+      ])
+      // Only update if there are new events (compare by first event id)
+      if (eventsData.length > 0 && (events.value.length === 0 || eventsData[0].id !== events.value[0]?.id)) {
+        events.value = eventsData
+        stats.value = statsData
+      }
+    } catch (e) {
+      console.error('Polling error:', e)
+    }
+  }, 2000)
+})
+
+onUnmounted(() => {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
 })
 </script>
 

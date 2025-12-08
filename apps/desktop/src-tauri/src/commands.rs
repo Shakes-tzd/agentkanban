@@ -1,4 +1,5 @@
 use crate::db::{Config, DbState, Feature, AgentEvent, Session, Stats};
+use crate::plugin_manager::PluginManager;
 use tauri::State;
 
 #[tauri::command]
@@ -125,4 +126,37 @@ pub async fn get_config(db: State<'_, DbState>) -> Result<Config, String> {
 #[tauri::command]
 pub async fn save_config(db: State<'_, DbState>, config: Config) -> Result<(), String> {
     db.0.save_config(&config).map_err(|e| e.to_string())
+}
+
+// Plugin management commands
+
+#[tauri::command]
+pub async fn get_plugin_status() -> Result<String, String> {
+    let plugin_path = PluginManager::default_plugin_path();
+    let pm = PluginManager::new(plugin_path);
+    Ok(pm.get_plugin_status().to_string())
+}
+
+#[tauri::command]
+pub async fn install_plugin() -> Result<String, String> {
+    let plugin_path = PluginManager::default_plugin_path();
+    let pm = PluginManager::new(plugin_path);
+
+    match pm.ensure_plugin_installed() {
+        Ok(status) => Ok(format!("Plugin installed successfully: {:?}", status)),
+        Err(e) => Err(e),
+    }
+}
+
+#[tauri::command]
+pub async fn get_plugin_path() -> Result<String, String> {
+    let path = PluginManager::default_plugin_path();
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn install_integration(project_dir: String) -> Result<String, String> {
+    crate::workflow_service::WorkflowService::install_antigravity_integration(&project_dir)
+        .map_err(|e| e.to_string())?;
+    Ok("Integration installed successfully".to_string())
 }

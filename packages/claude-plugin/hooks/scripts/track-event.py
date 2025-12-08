@@ -4,387 +4,38 @@
 # dependencies = []
 # ///
 """
-AgentKanban Event Tracker
+AgentKanban Event Tracker (SQLite Version)
+
 Unified script for tracking tool calls, stops, and subagent events.
-Links events to the active feature in feature_list.json.
+Writes directly to SQLite database (no HTTP server needed).
+Links events to the active feature.
 """
 
 import json
 import os
 import sys
 from pathlib import Path
-from urllib.request import urlopen, Request
-from urllib.error import URLError
 
-SYNC_SERVER = os.environ.get("AGENTKANBAN_SERVER", "http://127.0.0.1:4000")
-
-
-def load_features(project_dir: str) -> list[dict] | None:
-    """Load feature_list.json."""
-    feature_file = Path(project_dir) / "feature_list.json"
-    if not feature_file.exists():
-        return None
-    try:
-        return json.loads(feature_file.read_text())
-    except (json.JSONDecodeError, IOError):
-        return None
-
-
-def save_features(project_dir: str, features: list[dict]) -> bool:
-    """Save feature_list.json."""
-    feature_file = Path(project_dir) / "feature_list.json"
-    try:
-        feature_file.write_text(json.dumps(features, indent=2))
-        return True
-    except IOError:
-        return False
-
-
-def get_active_feature(project_dir: str) -> dict | None:
-    """Get the currently active feature (inProgress: true).
-
-    Returns feature with ID in format 'project_dir:index' to match database storage.
-    """
-    features = load_features(project_dir)
-    if not features:
-        return None
-
-    for index, feature in enumerate(features):
-        if feature.get("inProgress"):
-            # ID format must match database: project_dir:index
-            feature_id = f"{project_dir}:{index}"
-            return {
-                "id": feature_id,
-                "index": index,
-                "description": feature.get("description"),
-                "category": feature.get("category", "functional"),
-                "completionCriteria": feature.get("completionCriteria"),
-                "workCount": feature.get("workCount", 0)
-            }
-
-    return None
-
-
-def check_completion_criteria(
-    feature: dict,
-    tool_name: str,
-    tool_input: dict,
-    tool_result: dict
-) -> tuple[bool, str]:
-    """Check if a tool call satisfies the feature's completion criteria."""
-    import re
-
-    criteria = feature.get("completionCriteria", {})
-    criteria_type = criteria.get("type", "manual")
-
-    # Check if tool result indicates success
-    is_error = tool_result.get("is_error", False)
-    if is_error:
-        return False, ""
-
-    # Check based on criteria type
-    if criteria_type == "build":
-        if tool_name == "Bash":
-            cmd = tool_input.get("command", "").lower()
-            pattern = criteria.get("command_pattern", "")
-            if pattern:
-                if re.search(pattern, cmd, re.IGNORECASE):
-                    return True, "Build passed"
-            elif any(kw in cmd for kw in ["build", "compile", "cargo build", "pnpm build", "npm run build"]):
-                return True, "Build passed"
-
-    elif criteria_type == "test":
-        if tool_name == "Bash":
-            cmd = tool_input.get("command", "").lower()
-            if any(kw in cmd for kw in ["test", "pytest", "jest", "vitest", "cargo test"]):
-                return True, "Tests passed"
-
-    elif criteria_type == "lint":
-        if tool_name == "Bash":
-            cmd = tool_input.get("command", "").lower()
-            if any(kw in cmd for kw in ["lint", "eslint", "prettier", "clippy"]):
-                return True, "Lint passed"
-
-    elif criteria_type == "work_count":
-        # Check if work count threshold reached (handled separately)
-        pass
-
-    elif criteria_type == "any_success":
-        if tool_name in {"Edit", "Write", "Bash"}:
-            return True, "Work completed"
-
-    return False, ""
-
-
-def maybe_auto_complete(
-    project_dir: str,
-    tool_name: str,
-    tool_input: dict,
-    tool_result: dict
-) -> str | None:
-    """Check if the active feature should be auto-completed. Returns status message."""
-    features = load_features(project_dir)
-    if not features:
-        return None
-
-    # Find active feature
-    active_idx = None
-    active_feature = None
-    for i, f in enumerate(features):
-        if f.get("inProgress"):
-            active_idx = i
-            active_feature = f
-            break
-
-    if active_idx is None or active_feature is None:
-        return None
-
-    # Skip if already complete
-    if active_feature.get("passes"):
-        return None
-
-    # Check if this is a "work" tool (not read-only)
-    is_work_tool = tool_name in {"Edit", "Write", "Bash", "Task"}
-    is_error = tool_result.get("is_error", False)
-
-    # Increment work count for successful work tools
-    if is_work_tool and not is_error:
-        work_count = active_feature.get("workCount", 0) + 1
-        features[active_idx]["workCount"] = work_count
-
-        # Check work_count completion criteria
-        criteria = active_feature.get("completionCriteria", {})
-        if criteria.get("type") == "work_count":
-            threshold = criteria.get("count", 3)
-            if work_count >= threshold:
-                features[active_idx]["passes"] = True
-                features[active_idx]["inProgress"] = False
-                activate_next_feature(features)
-                save_features(project_dir, features)
-                return f"Auto-completed (work count: {work_count})"
-
-    # Check other completion criteria
-    is_complete, reason = check_completion_criteria(
-        active_feature, tool_name, tool_input, tool_result
-    )
-
-    if is_complete:
-        features[active_idx]["passes"] = True
-        features[active_idx]["inProgress"] = False
-        activate_next_feature(features)
-        save_features(project_dir, features)
-        return f"Auto-completed: {reason}"
-
-    # Save updated work count even if not complete
-    if is_work_tool and not is_error:
-        save_features(project_dir, features)
-
-    return None
-
-
-def activate_next_feature(features: list[dict]) -> int | None:
-    """Activate the next incomplete feature. Returns its index."""
-    for i, f in enumerate(features):
-        if not f.get("passes") and not f.get("inProgress"):
-            features[i]["inProgress"] = True
-            return i
-    return None
-
-
-def send_event(event_data: dict) -> bool:
-    """Send event to AgentKanban server."""
-    try:
-        data = json.dumps(event_data).encode()
-        req = Request(
-            f"{SYNC_SERVER}/events",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        with urlopen(req, timeout=2) as resp:
-            return resp.status == 200
-    except (URLError, TimeoutError, OSError):
-        return False
+# Import shared database helper
+sys.path.insert(0, str(Path(__file__).parent))
+import db_helper
 
 
 def extract_file_paths(tool_input: dict) -> list[str]:
     """Extract file paths from tool input."""
     paths = []
 
-    # Direct file_path
     if "file_path" in tool_input:
         paths.append(tool_input["file_path"])
 
-    # Glob pattern
     if "pattern" in tool_input:
         paths.append(f"glob:{tool_input['pattern']}")
 
-    # Bash command - extract paths heuristically
     if "command" in tool_input:
         cmd = tool_input["command"]
-        # Just note the command type, don't parse all paths
         paths.append(f"bash:{cmd[:50]}...")
 
     return paths
-
-
-def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str):
-    """Handle PostToolUse events - track all tool calls."""
-    tool_name = hook_input.get("tool_name", "unknown")
-    tool_input = hook_input.get("tool_input", {})
-    tool_result = hook_input.get("tool_result", {})
-
-    # Skip tracking the tracking script itself
-    if "track-event.py" in str(tool_input):
-        return
-
-    # Get active feature
-    active_feature = get_active_feature(project_dir)
-
-    # Build detailed payload based on tool type
-    payload = {
-        "filePaths": extract_file_paths(tool_input),
-        "inputSummary": summarize_input(tool_name, tool_input),
-        "success": not tool_result.get("is_error", False)
-    }
-
-    # Add tool-specific details
-    if tool_name == "Edit":
-        payload["oldString"] = (tool_input.get("old_string", "")[:200] + "...") if len(tool_input.get("old_string", "")) > 200 else tool_input.get("old_string", "")
-        payload["newString"] = (tool_input.get("new_string", "")[:200] + "...") if len(tool_input.get("new_string", "")) > 200 else tool_input.get("new_string", "")
-        payload["filePath"] = tool_input.get("file_path", "")
-    elif tool_name == "Bash":
-        payload["command"] = tool_input.get("command", "")[:500]
-        payload["description"] = tool_input.get("description", "")
-        # Include output preview if available
-        output = tool_result.get("output", "")
-        if output:
-            payload["outputPreview"] = (output[:300] + "...") if len(output) > 300 else output
-    elif tool_name == "Read":
-        payload["filePath"] = tool_input.get("file_path", "")
-        payload["offset"] = tool_input.get("offset")
-        payload["limit"] = tool_input.get("limit")
-    elif tool_name == "Write":
-        payload["filePath"] = tool_input.get("file_path", "")
-        content = tool_input.get("content", "")
-        payload["contentPreview"] = (content[:200] + "...") if len(content) > 200 else content
-    elif tool_name == "Grep":
-        payload["pattern"] = tool_input.get("pattern", "")
-        payload["path"] = tool_input.get("path", "")
-        payload["glob"] = tool_input.get("glob", "")
-    elif tool_name == "Glob":
-        payload["pattern"] = tool_input.get("pattern", "")
-        payload["path"] = tool_input.get("path", "")
-
-    # Build event
-    event = {
-        "eventType": "ToolCall",
-        "sourceAgent": "claude-code",
-        "sessionId": session_id,
-        "projectDir": project_dir,
-        "toolName": tool_name,
-        "payload": payload
-    }
-
-    if active_feature:
-        event["featureId"] = active_feature["id"]
-        event["payload"]["featureCategory"] = active_feature["category"]
-        event["payload"]["featureDescription"] = active_feature["description"]
-
-    send_event(event)
-
-    # Check for auto-completion after tracking the event
-    completion_status = maybe_auto_complete(project_dir, tool_name, tool_input, tool_result)
-    if completion_status:
-        # Add completion info to event payload for observability
-        completion_event = {
-            "eventType": "FeatureCompleted",
-            "sourceAgent": "claude-code",
-            "sessionId": session_id,
-            "projectDir": project_dir,
-            "payload": {
-                "completionStatus": completion_status,
-                "triggeredBy": tool_name
-            }
-        }
-        if active_feature:
-            completion_event["featureId"] = active_feature["id"]
-            completion_event["payload"]["featureDescription"] = active_feature["description"]
-        send_event(completion_event)
-
-
-def handle_stop(hook_input: dict, project_dir: str, session_id: str):
-    """Handle Stop events - agent finished."""
-    stop_hook_input = hook_input.get("stop_hook_input", {})
-
-    event = {
-        "eventType": "AgentStop",
-        "sourceAgent": "claude-code",
-        "sessionId": session_id,
-        "projectDir": project_dir,
-        "payload": {
-            "reason": stop_hook_input.get("stop_reason", "unknown"),
-            "lastMessage": (stop_hook_input.get("last_assistant_message", "") or "")[:200]
-        }
-    }
-
-    send_event(event)
-
-
-def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
-    """Handle SubagentStop events - Task tool finished."""
-    tool_input = hook_input.get("tool_input", {})
-    tool_result = hook_input.get("tool_result", {})
-
-    event = {
-        "eventType": "SubagentStop",
-        "sourceAgent": "claude-code",
-        "sessionId": session_id,
-        "projectDir": project_dir,
-        "toolName": "Task",
-        "payload": {
-            "taskDescription": tool_input.get("description", ""),
-            "subagentType": tool_input.get("subagent_type", ""),
-            "success": not tool_result.get("is_error", False),
-            "resultSummary": (str(tool_result.get("output", ""))[:200] if tool_result else "")
-        }
-    }
-
-    active_feature = get_active_feature(project_dir)
-    if active_feature:
-        event["featureId"] = active_feature["id"]
-        event["payload"]["featureDescription"] = active_feature["description"]
-
-    send_event(event)
-
-
-def handle_user_prompt_submit(hook_input: dict, project_dir: str, session_id: str):
-    """Handle UserPromptSubmit events - capture user queries for observability."""
-    # Extract user prompt from hook input
-    user_prompt = hook_input.get("user_prompt", "")
-    if not user_prompt:
-        # Try alternative field names
-        user_prompt = hook_input.get("prompt", "") or hook_input.get("message", "")
-
-    event = {
-        "eventType": "UserQuery",
-        "sourceAgent": "claude-code",
-        "sessionId": session_id,
-        "projectDir": project_dir,
-        "payload": {
-            "prompt": user_prompt[:1000],  # Truncate long prompts
-            "promptLength": len(user_prompt),
-            "preview": user_prompt[:200] if user_prompt else ""
-        }
-    }
-
-    # Get active feature
-    active_feature = get_active_feature(project_dir)
-    if active_feature:
-        event["featureId"] = active_feature["id"]
-        event["payload"]["featureDescription"] = active_feature["description"]
-
-    send_event(event)
 
 
 def summarize_input(tool_name: str, tool_input: dict) -> str:
@@ -408,24 +59,421 @@ def summarize_input(tool_name: str, tool_input: dict) -> str:
         return f"{tool_name}: {str(tool_input)[:60]}"
 
 
+def check_completion_criteria(
+    feature: dict,
+    tool_name: str,
+    tool_input: dict,
+    tool_result: dict
+) -> tuple[bool, str]:
+    """Check if a tool call satisfies the feature's completion criteria."""
+    import re
+
+    criteria = feature.get("completionCriteria") or {}
+    criteria_type = criteria.get("type", "manual")
+
+    is_error = tool_result.get("is_error", False)
+    if is_error:
+        return False, ""
+
+    if criteria_type == "build":
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "").lower()
+            pattern = criteria.get("command_pattern", "")
+            if pattern:
+                if re.search(pattern, cmd, re.IGNORECASE):
+                    return True, "Build passed"
+            elif any(kw in cmd for kw in ["build", "compile", "cargo build", "pnpm build", "npm run build"]):
+                return True, "Build passed"
+
+    elif criteria_type == "test":
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "").lower()
+            if any(kw in cmd for kw in ["test", "pytest", "jest", "vitest", "cargo test"]):
+                return True, "Tests passed"
+
+    elif criteria_type == "lint":
+        if tool_name == "Bash":
+            cmd = tool_input.get("command", "").lower()
+            if any(kw in cmd for kw in ["lint", "eslint", "prettier", "clippy"]):
+                return True, "Lint passed"
+
+    elif criteria_type == "any_success":
+        if tool_name in {"Edit", "Write", "Bash"}:
+            return True, "Work completed"
+
+    return False, ""
+
+
+def maybe_auto_complete(
+    project_dir: str,
+    active_feature: dict,
+    tool_name: str,
+    tool_input: dict,
+    tool_result: dict
+) -> str | None:
+    """Check if the active feature should be auto-completed. Returns status message."""
+    if not active_feature:
+        return None
+
+    if active_feature.get("passes"):
+        return None
+
+    feature_id = active_feature["id"]
+    is_work_tool = tool_name in {"Edit", "Write", "Bash", "Task"}
+    is_error = tool_result.get("is_error", False)
+
+    # Increment work count for successful work tools
+    if is_work_tool and not is_error:
+        new_work_count = db_helper.increment_work_count(feature_id)
+
+        # Check work_count completion criteria
+        criteria = active_feature.get("completionCriteria") or {}
+        if criteria.get("type") == "work_count":
+            threshold = criteria.get("count", 3)
+            if new_work_count >= threshold:
+                db_helper.complete_feature(feature_id)
+                # Activate next feature
+                _activate_next_feature(project_dir)
+                return f"Auto-completed (work count: {new_work_count})"
+
+    # Check other completion criteria
+    is_complete, reason = check_completion_criteria(
+        active_feature, tool_name, tool_input, tool_result
+    )
+
+    if is_complete:
+        db_helper.complete_feature(feature_id)
+        _activate_next_feature(project_dir)
+        return f"Auto-completed: {reason}"
+
+    return None
+
+
+def _activate_next_feature(project_dir: str) -> str | None:
+    """Activate the next incomplete feature. Returns its ID."""
+    features = db_helper.get_features(project_dir)
+    for feature in features:
+        if not feature.get("passes") and not feature.get("inProgress"):
+            db_helper.activate_feature(project_dir, feature["id"])
+            return feature["id"]
+    return None
+
+
+def is_diagnostic_command(tool_name: str, tool_input: dict) -> bool:
+    """Check if a tool call is a diagnostic/meta command that shouldn't be feature-attributed."""
+    if tool_name == "Bash":
+        cmd = tool_input.get("command", "").lower()
+        # SQLite queries to agentkanban database
+        if "agentkanban" in cmd and "sqlite3" in cmd:
+            return True
+        # Generic database inspection
+        if any(x in cmd for x in [".agentkanban", "session_state", "sessions", "features"]) and "select" in cmd:
+            return True
+        # Hook debugging/verification
+        if "hook" in cmd and any(x in cmd for x in ["cat", "tail", "head", "grep"]):
+            return True
+    elif tool_name == "Read":
+        file_path = tool_input.get("file_path", "").lower()
+        # Reading hook scripts or logs
+        if ".agentkanban" in file_path or "hook" in file_path:
+            return True
+    return False
+
+
+def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str):
+    """Handle PostToolUse events - track all tool calls."""
+    tool_name = hook_input.get("tool_name", "unknown")
+    tool_input = hook_input.get("tool_input", {})
+    tool_result = hook_input.get("tool_result", {})
+
+    # Skip tracking the tracking script itself
+    if "track-event.py" in str(tool_input) or "db_helper" in str(tool_input):
+        return
+
+    # Check if this is a diagnostic command (shouldn't be feature-attributed)
+    is_diagnostic = is_diagnostic_command(tool_name, tool_input)
+
+    # Get active feature from database (only if not diagnostic)
+    active_feature = None if is_diagnostic else db_helper.get_active_feature(project_dir)
+
+    # Build detailed payload based on tool type
+    payload = {
+        "filePaths": extract_file_paths(tool_input),
+        "inputSummary": summarize_input(tool_name, tool_input),
+        "success": not tool_result.get("is_error", False),
+        "isDiagnostic": is_diagnostic
+    }
+
+    # Add tool-specific details
+    if tool_name == "Edit":
+        payload["oldString"] = (tool_input.get("old_string", "")[:200] + "...") if len(tool_input.get("old_string", "")) > 200 else tool_input.get("old_string", "")
+        payload["newString"] = (tool_input.get("new_string", "")[:200] + "...") if len(tool_input.get("new_string", "")) > 200 else tool_input.get("new_string", "")
+        payload["filePath"] = tool_input.get("file_path", "")
+    elif tool_name == "Bash":
+        payload["command"] = tool_input.get("command", "")[:500]
+        payload["description"] = tool_input.get("description", "")
+        output = tool_result.get("output", "")
+        if output:
+            payload["outputPreview"] = (output[:300] + "...") if len(output) > 300 else output
+    elif tool_name == "Read":
+        payload["filePath"] = tool_input.get("file_path", "")
+        payload["offset"] = tool_input.get("offset")
+        payload["limit"] = tool_input.get("limit")
+    elif tool_name == "Write":
+        payload["filePath"] = tool_input.get("file_path", "")
+        content = tool_input.get("content", "")
+        payload["contentPreview"] = (content[:200] + "...") if len(content) > 200 else content
+    elif tool_name == "Grep":
+        payload["pattern"] = tool_input.get("pattern", "")
+        payload["path"] = tool_input.get("path", "")
+        payload["glob"] = tool_input.get("glob", "")
+    elif tool_name == "Glob":
+        payload["pattern"] = tool_input.get("pattern", "")
+        payload["path"] = tool_input.get("path", "")
+
+    # Add feature context if available
+    feature_id = None
+    if active_feature:
+        feature_id = active_feature["id"]
+        payload["featureCategory"] = active_feature["category"]
+        payload["featureDescription"] = active_feature["description"]
+
+    # Insert event into database
+    db_helper.insert_event(
+        event_type="ToolCall",
+        source_agent="claude-code",
+        session_id=session_id,
+        project_dir=project_dir,
+        tool_name=tool_name,
+        payload=payload,
+        feature_id=feature_id
+    )
+
+    # Update session activity
+    db_helper.update_session_activity(session_id)
+
+    # Check for auto-completion after tracking the event
+    completion_status = maybe_auto_complete(project_dir, active_feature, tool_name, tool_input, tool_result)
+    if completion_status:
+        # Record completion event
+        completion_payload = {
+            "completionStatus": completion_status,
+            "triggeredBy": tool_name
+        }
+        if active_feature:
+            completion_payload["featureDescription"] = active_feature["description"]
+
+        db_helper.insert_event(
+            event_type="FeatureCompleted",
+            source_agent="claude-code",
+            session_id=session_id,
+            project_dir=project_dir,
+            payload=completion_payload,
+            feature_id=feature_id
+        )
+
+
+def handle_stop(hook_input: dict, project_dir: str, session_id: str):
+    """Handle Stop events - agent finished."""
+    stop_hook_input = hook_input.get("stop_hook_input", {})
+
+    payload = {
+        "reason": stop_hook_input.get("stop_reason", "unknown"),
+        "lastMessage": (stop_hook_input.get("last_assistant_message", "") or "")[:200]
+    }
+
+    db_helper.insert_event(
+        event_type="AgentStop",
+        source_agent="claude-code",
+        session_id=session_id,
+        project_dir=project_dir,
+        payload=payload
+    )
+
+
+def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
+    """Handle SubagentStop events - Task tool finished."""
+    tool_input = hook_input.get("tool_input", {})
+    tool_result = hook_input.get("tool_result", {})
+
+    active_feature = db_helper.get_active_feature(project_dir)
+    feature_id = active_feature["id"] if active_feature else None
+
+    payload = {
+        "taskDescription": tool_input.get("description", ""),
+        "subagentType": tool_input.get("subagent_type", ""),
+        "success": not tool_result.get("is_error", False),
+        "resultSummary": (str(tool_result.get("output", ""))[:200] if tool_result else "")
+    }
+
+    if active_feature:
+        payload["featureDescription"] = active_feature["description"]
+
+    db_helper.insert_event(
+        event_type="SubagentStop",
+        source_agent="claude-code",
+        session_id=session_id,
+        project_dir=project_dir,
+        tool_name="Task",
+        payload=payload,
+        feature_id=feature_id
+    )
+
+
+def classify_prompt_to_feature(prompt: str, features: list[dict]) -> tuple[int | None, int, str]:
+    """
+    Lightweight keyword-based classification of user prompt to feature.
+    Returns (feature_index, confidence, reason).
+    Only runs once per user message - no AI subprocess calls.
+    """
+    import re
+
+    if not features or not prompt:
+        return None, 0, "no_data"
+
+    prompt_lower = prompt.lower()
+
+    # Extract meaningful words from prompt
+    stop_words = {
+        'the', 'a', 'an', 'is', 'are', 'to', 'of', 'in', 'for', 'on', 'with',
+        'can', 'you', 'please', 'help', 'me', 'this', 'that', 'it', 'i', 'we',
+        'want', 'need', 'would', 'like', 'make', 'do', 'get', 'how', 'what'
+    }
+    words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]{2,}\b', prompt_lower)
+    prompt_keywords = {w for w in words if w not in stop_words}
+
+    if not prompt_keywords:
+        return None, 0, "no_keywords"
+
+    best_idx = None
+    best_score = 0.0
+    best_matches = []
+
+    for i, feature in enumerate(features):
+        feature_text = (feature.get("description", "") + " " +
+                       " ".join(feature.get("steps") or []))
+        feature_words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]{2,}\b', feature_text.lower())
+        feature_keywords = {w for w in feature_words if w not in stop_words}
+
+        # Count matching keywords
+        matches = []
+        for pw in prompt_keywords:
+            for fw in feature_keywords:
+                if pw == fw or pw.rstrip('s') == fw.rstrip('s'):
+                    matches.append(pw)
+                    break
+                elif len(pw) > 4 and len(fw) > 4 and (pw in fw or fw in pw):
+                    matches.append(pw)
+                    break
+
+        score = len(matches) / len(prompt_keywords) if prompt_keywords else 0
+
+        # Boost incomplete features
+        if not feature.get("passes"):
+            score *= 1.3
+        # Boost already active features (continuity)
+        if feature.get("inProgress"):
+            score *= 1.2
+
+        if score > best_score:
+            best_score = score
+            best_idx = i
+            best_matches = matches
+
+    confidence = int(min(best_score * 100, 100))
+    reason = f"keywords: {', '.join(best_matches[:3])}" if best_matches else "weak_match"
+
+    return best_idx, confidence, reason
+
+
+def handle_user_prompt_submit(hook_input: dict, project_dir: str, session_id: str):
+    """
+    Handle UserPromptSubmit events - capture user queries and classify features.
+    This is the ONLY place feature classification happens (once per user message).
+    """
+    user_prompt = hook_input.get("user_prompt", "")
+    if not user_prompt:
+        user_prompt = hook_input.get("prompt", "") or hook_input.get("message", "")
+
+    active_feature = db_helper.get_active_feature(project_dir)
+    feature_id = active_feature["id"] if active_feature else None
+
+    # --- Feature Classification (once per user message) ---
+    features = db_helper.get_features(project_dir)
+    classification_msg = None
+
+    if features:
+        # Check if we need to classify
+        needs_classification = (
+            active_feature is None or  # No active feature
+            active_feature.get("passes")  # Current feature is complete
+        )
+
+        if needs_classification:
+            matched_idx, confidence, reason = classify_prompt_to_feature(user_prompt, features)
+
+            if matched_idx is not None and confidence >= 40:
+                new_feature = features[matched_idx]
+                new_feature_id = new_feature["id"]
+
+                # Only switch if different from current
+                if feature_id != new_feature_id:
+                    db_helper.activate_feature(project_dir, new_feature_id)
+                    feature_id = new_feature_id
+                    active_feature = new_feature
+                    classification_msg = f"Feature matched: {new_feature['description'][:40]}... ({confidence}%)"
+
+        # Cache the session state
+        db_helper.set_session_state(
+            session_id=session_id,
+            active_feature_id=feature_id,
+            classification_source="user_prompt",
+            last_prompt=user_prompt[:200]
+        )
+
+    payload = {
+        "prompt": user_prompt[:1000],
+        "promptLength": len(user_prompt),
+        "preview": user_prompt[:200] if user_prompt else ""
+    }
+
+    if active_feature:
+        payload["featureDescription"] = active_feature["description"]
+    if classification_msg:
+        payload["classificationResult"] = classification_msg
+
+    db_helper.insert_event(
+        event_type="UserQuery",
+        source_agent="claude-code",
+        session_id=session_id,
+        project_dir=project_dir,
+        payload=payload,
+        feature_id=feature_id
+    )
+
+
 def main():
-    # Get hook type from environment (set by wrapper or hooks.json)
     hook_type = os.environ.get("AGENTKANBAN_HOOK_TYPE", "PostToolUse")
 
-    # Read hook input from stdin
     try:
         hook_input = json.load(sys.stdin)
     except json.JSONDecodeError:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": hook_type}}))
         return
 
-    # Get session_id from hook input or environment
-    session_id = hook_input.get("session_id") or os.environ.get("CLAUDE_SESSION_ID", "unknown")
+    # Debug: log the hook input to see what session_id we're getting
+    import sys as _sys
+    debug_log = Path.home() / ".agentkanban" / "hook_debug.log"
+    with open(debug_log, "a") as f:
+        f.write(f"\n=== {hook_type} at {__import__('datetime').datetime.now()} ===\n")
+        f.write(f"hook_input keys: {list(hook_input.keys())}\n")
+        f.write(f"session_id from input: {hook_input.get('session_id')}\n")
+        f.write(f"CLAUDE_SESSION_ID env: {os.environ.get('CLAUDE_SESSION_ID')}\n")
 
-    # Get project directory from environment (Claude Code sets this)
+    session_id = hook_input.get("session_id") or os.environ.get("CLAUDE_SESSION_ID", "unknown")
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+
     if not project_dir:
-        # Fallback: try to detect from tool input file paths
         tool_input = hook_input.get("tool_input", {})
         file_path = tool_input.get("file_path", "")
         if file_path:
@@ -448,7 +496,6 @@ def main():
     elif hook_type == "UserPromptSubmit":
         handle_user_prompt_submit(hook_input, project_dir, session_id)
 
-    # Always continue - include hookEventName in hookSpecificOutput
     print(json.dumps({"hookSpecificOutput": {"hookEventName": hook_type}}))
 
 

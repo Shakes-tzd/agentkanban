@@ -1,4 +1,6 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+  - 'packages/agent-kanban-client'
+  - 'packages/gemini-adapter'
   - 'shared/*'

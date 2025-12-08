@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import ToolIcon from './icons/ToolIcon.vue'
 
 interface AgentEvent {
@@ -28,9 +29,184 @@ interface ParsedPayload {
   [key: string]: unknown
 }
 
-defineProps<{
+interface SessionGroup {
+  sessionId: string
+  sourceAgent: string
+  projectDir: string
+  startTime: string
+  endTime: string | null
+  events: AgentEvent[]
+  isActive: boolean
+}
+
+const props = defineProps<{
   events: AgentEvent[]
 }>()
+
+// Track collapsed sessions (collapsed by default for ended sessions)
+const collapsedSessions = ref<Set<string>>(new Set())
+
+// Session is considered stale after 15 minutes of inactivity
+const STALE_SESSION_MINUTES = 15
+
+// Group events by sessionId
+const sessionGroups = computed<SessionGroup[]>(() => {
+  const groups = new Map<string, SessionGroup>()
+  const now = new Date()
+
+  // Sort events by time (oldest first for grouping)
+  const sortedEvents = [...props.events].sort((a, b) =>
+    new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  )
+
+  for (const event of sortedEvents) {
+    const sessionId = event.sessionId || 'unknown'
+
+    if (!groups.has(sessionId)) {
+      groups.set(sessionId, {
+        sessionId,
+        sourceAgent: event.sourceAgent,
+        projectDir: event.projectDir,
+        startTime: event.createdAt,
+        endTime: null,
+        events: [],
+        isActive: true
+      })
+    }
+
+    const group = groups.get(sessionId)!
+    group.events.push(event)
+
+    // Update end time and status
+    if (event.eventType === 'SessionEnd') {
+      group.endTime = event.createdAt
+      group.isActive = false
+    }
+
+    // Track latest activity time
+    const eventTime = new Date(event.createdAt)
+    if (eventTime > new Date(group.startTime)) {
+      if (!group.endTime || group.isActive) {
+        // Update "last activity" for active sessions
+        group.endTime = event.createdAt
+      }
+    }
+  }
+
+  // Mark stale sessions as inactive (no activity for 30+ minutes)
+  // Also reverse events so latest appears at top
+  for (const group of groups.values()) {
+    // Reverse events order: latest activity at top
+    group.events.reverse()
+
+    if (group.isActive) {
+      const lastActivity = group.endTime ? new Date(group.endTime) : new Date(group.startTime)
+      const minutesSinceActivity = (now.getTime() - lastActivity.getTime()) / (1000 * 60)
+
+      if (minutesSinceActivity > STALE_SESSION_MINUTES) {
+        group.isActive = false
+      }
+    }
+  }
+
+  // Identify internal/subagent sessions (e.g., feature classifier calls)
+  const isInternalSession = (group: SessionGroup): boolean => {
+    if (group.events.length <= 2) {
+      return group.events.some(e => {
+        if (e.eventType === 'UserQuery' && e.payload) {
+          try {
+            const payload = JSON.parse(e.payload)
+            const prompt = payload.prompt || ''
+            return prompt.includes('feature classifier') ||
+                   prompt.includes('You are a feature classifier')
+          } catch { return false }
+        }
+        return false
+      })
+    }
+    return false
+  }
+
+  // Separate internal sessions and combine them into one group
+  const allGroups = Array.from(groups.values())
+  const regularSessions = allGroups.filter(g => !isInternalSession(g))
+  const internalSessions = allGroups.filter(g => isInternalSession(g))
+
+  // If there are internal sessions, combine them into a single "Subagents" group
+  if (internalSessions.length > 0) {
+    const combinedInternal: SessionGroup = {
+      sessionId: 'internal-subagents',
+      sourceAgent: 'subagents',
+      projectDir: internalSessions[0].projectDir,
+      startTime: internalSessions.reduce((min, s) =>
+        new Date(s.startTime) < new Date(min) ? s.startTime : min,
+        internalSessions[0].startTime
+      ),
+      endTime: internalSessions.reduce((max, s) => {
+        const sEnd = s.endTime || s.startTime
+        return new Date(sEnd) > new Date(max) ? sEnd : max
+      }, internalSessions[0].endTime || internalSessions[0].startTime),
+      events: internalSessions.flatMap(s => s.events),
+      isActive: internalSessions.some(s => s.isActive)
+    }
+    // Sort combined events by time (latest first)
+    combinedInternal.events.sort((a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    )
+    regularSessions.push(combinedInternal)
+  }
+
+  // Sort: active first, then by most recent activity
+  return regularSessions.sort((a, b) => {
+      // Active sessions first
+      if (a.isActive !== b.isActive) {
+        return a.isActive ? -1 : 1
+      }
+      // Then sort by most recent activity
+      const aTime = a.endTime ? new Date(a.endTime) : new Date(a.startTime)
+      const bTime = b.endTime ? new Date(b.endTime) : new Date(b.startTime)
+      return bTime.getTime() - aTime.getTime()
+    })
+})
+
+function toggleSession(sessionId: string) {
+  if (collapsedSessions.value.has(sessionId)) {
+    collapsedSessions.value.delete(sessionId)
+  } else {
+    collapsedSessions.value.add(sessionId)
+  }
+}
+
+function isCollapsed(sessionId: string): boolean {
+  return collapsedSessions.value.has(sessionId)
+}
+
+function formatDuration(startTime: string, endTime: string | null): string {
+  const start = new Date(startTime)
+  const end = endTime ? new Date(endTime) : new Date()
+  const diffMs = Math.abs(end.getTime() - start.getTime())
+
+  const totalSeconds = Math.floor(diffMs / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`
+  }
+  return `${seconds}s`
+}
+
+function getShortSessionId(sessionId: string): string {
+  // Show last 8 chars of session ID
+  if (sessionId.length > 12) {
+    return '...' + sessionId.slice(-8)
+  }
+  return sessionId
+}
 
 const emit = defineEmits<{
   'event-click': [event: AgentEvent]
@@ -272,42 +448,82 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
   <div class="activity-timeline">
     <div class="timeline-header">
       <h2>Activity</h2>
+      <span class="session-count">{{ sessionGroups.length }} sessions</span>
     </div>
 
     <div class="timeline-content">
+      <!-- Session groups -->
       <div
-        v-for="event in events"
-        :key="event.id"
-        class="timeline-item"
-        :class="{
-          'status-success': getSuccessStatus(event) === true,
-          'status-error': getSuccessStatus(event) === false
-        }"
-        @click="emit('event-click', event)"
+        v-for="session in sessionGroups"
+        :key="session.sessionId"
+        class="session-group"
+        :class="{ 'session-active': session.isActive }"
       >
-        <div class="timeline-icon">
-          <ToolIcon :name="getIconName(event)" :size="16" />
+        <!-- Session header (clickable to expand/collapse) -->
+        <div
+          class="session-header"
+          @click="toggleSession(session.sessionId)"
+        >
+          <!-- Row 1: Agent + Status -->
+          <div class="session-row-primary">
+            <div class="session-agent-info">
+              <ToolIcon
+                :name="isCollapsed(session.sessionId) ? 'chevron-right' : 'chevron-down'"
+                :size="12"
+                class="collapse-icon"
+              />
+              <span
+                class="agent-dot"
+                :style="{ background: getAgentColor(session.sourceAgent) }"
+              ></span>
+              <span class="session-agent">{{ session.sourceAgent }}</span>
+            </div>
+            <span v-if="session.isActive" class="session-status active">active</span>
+            <span v-else class="session-status ended">ended</span>
+          </div>
+          <!-- Row 2: Stats -->
+          <div class="session-row-secondary">
+            <span class="session-id">{{ getShortSessionId(session.sessionId) }}</span>
+            <div class="session-meta">
+              <span class="session-stats">{{ session.events.length }}</span>
+              <span class="session-duration">{{ formatDuration(session.startTime, session.endTime) }}</span>
+            </div>
+          </div>
         </div>
 
-        <div class="timeline-body">
-          <!-- Primary: Event title -->
-          <div class="title-row">
-            <p class="event-title">
-              {{ getDescriptiveTitle(event) }}
-            </p>
-            <span class="event-time">{{ formatTime(event.createdAt) }}</span>
-          </div>
+        <!-- Session events (collapsible) -->
+        <div v-show="!isCollapsed(session.sessionId)" class="session-events">
+          <div
+            v-for="event in session.events"
+            :key="event.id"
+            class="timeline-item"
+            :class="{
+              'status-success': getSuccessStatus(event) === true,
+              'status-error': getSuccessStatus(event) === false
+            }"
+            @click="emit('event-click', event)"
+          >
+            <div class="timeline-icon">
+              <ToolIcon :name="getIconName(event)" :size="16" />
+            </div>
 
-          <!-- Secondary: Minimal metadata - just project + colored agent dot -->
-          <div class="meta-row">
-            <span v-if="event.projectDir" class="project-name">
-              {{ getProjectName(event.projectDir) }}
-            </span>
-            <span
-              class="agent-dot"
-              :style="{ background: getAgentColor(event.sourceAgent) }"
-              :title="event.sourceAgent"
-            ></span>
+            <div class="timeline-body">
+              <!-- Primary: Event title -->
+              <div class="title-row">
+                <p class="event-title">
+                  {{ getDescriptiveTitle(event) }}
+                </p>
+                <span class="event-time">{{ formatTime(event.createdAt) }}</span>
+              </div>
+
+              <!-- Secondary: Minimal metadata -->
+              <div class="meta-row">
+                <span v-if="event.featureId" class="feature-link">
+                  {{ event.featureId.split(':').pop() }}
+                </span>
+                <span class="event-type-badge">{{ getEventTypeBadge(event) }}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -330,6 +546,9 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
 .timeline-header {
   padding: 16px;
   border-bottom: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .timeline-header h2 {
@@ -338,6 +557,127 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.session-count {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* Session group styles */
+.session-group {
+  border-bottom: 1px solid var(--border-color);
+}
+
+.session-group:last-child {
+  border-bottom: none;
+}
+
+.session-group.session-active {
+  background: rgba(96, 165, 250, 0.03);
+}
+
+.session-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: var(--bg-secondary);
+  transition: background 0.15s;
+}
+
+.session-header:hover {
+  background: var(--bg-tertiary);
+}
+
+/* Row 1: Agent + Status */
+.session-row-primary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-agent-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.collapse-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.session-agent {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* Row 2: ID + Stats */
+.session-row-secondary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding-left: 18px;
+}
+
+.session-id {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  font-family: monospace;
+}
+
+.session-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-stats {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+}
+
+.session-stats::after {
+  content: ' events';
+}
+
+.session-duration {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  font-family: monospace;
+}
+
+.session-status {
+  font-size: 0.6rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.session-status.active {
+  background: rgba(96, 165, 250, 0.2);
+  color: #60a5fa;
+}
+
+.session-status.ended {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+.session-events {
+  padding-left: 8px;
+  border-left: 2px solid var(--border-color);
+  margin-left: 16px;
 }
 
 .timeline-content {
@@ -440,6 +780,20 @@ function getSuccessStatus(event: AgentEvent): boolean | null {
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+
+.feature-link {
+  font-size: 0.65rem;
+  color: var(--accent-blue);
+  background: rgba(96, 165, 250, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.event-type-badge {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
 }
 
 .empty-timeline {

@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub struct Database {
@@ -8,6 +8,15 @@ pub struct Database {
 }
 
 pub struct DbState(pub Arc<Database>);
+
+/// Get the standard database path: ~/.agentkanban/agentkanban.db
+/// This is shared between Tauri app and Claude Code hooks
+pub fn get_standard_db_path() -> PathBuf {
+    dirs::home_dir()
+        .expect("Could not find home directory")
+        .join(".agentkanban")
+        .join("agentkanban.db")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +43,8 @@ pub struct Feature {
     pub in_progress: bool,
     pub agent: Option<String>,
     pub steps: Option<Vec<String>>,
+    pub work_count: i32,
+    pub completion_criteria: Option<String>,
     pub updated_at: String,
 }
 
@@ -82,6 +93,19 @@ impl Database {
     pub fn new(path: &Path) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
 
+        // Configure SQLite for concurrent access (WAL mode)
+        // This allows hooks and Tauri app to safely share the database
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA busy_timeout = 10000;
+            PRAGMA cache_size = -2000;
+            "#,
+        )?;
+
+        tracing::info!("Database opened with WAL mode at {:?}", path);
+
         // Create base tables
         conn.execute_batch(
             r#"
@@ -104,6 +128,9 @@ impl Database {
                 passes INTEGER DEFAULT 0,
                 in_progress INTEGER DEFAULT 0,
                 agent TEXT,
+                steps TEXT,
+                work_count INTEGER DEFAULT 0,
+                completion_criteria TEXT,
                 updated_at TEXT DEFAULT (datetime('now'))
             );
             
@@ -137,6 +164,10 @@ impl Database {
 
         // Migration: Add steps column to features table
         let _ = conn.execute("ALTER TABLE features ADD COLUMN steps TEXT", []);
+
+        // Migration: Add work_count and completion_criteria columns for auto-completion
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN work_count INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN completion_criteria TEXT", []);
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -279,8 +310,8 @@ impl Database {
                 .map(|s| serde_json::to_string(s).unwrap_or_default());
 
             conn.execute(
-                "INSERT OR REPLACE INTO features (id, project_dir, description, category, passes, in_progress, agent, steps, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+                "INSERT OR REPLACE INTO features (id, project_dir, description, category, passes, in_progress, agent, steps, work_count, completion_criteria, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))",
                 params![
                     feature.id,
                     project_dir,
@@ -290,6 +321,8 @@ impl Database {
                     feature.in_progress,
                     feature.agent,
                     steps_json,
+                    feature.work_count,
+                    feature.completion_criteria,
                 ],
             )?;
         }
@@ -306,7 +339,7 @@ impl Database {
 
         if let Some(dir) = project_dir {
             let mut stmt = conn.prepare(
-                "SELECT id, project_dir, description, category, passes, in_progress, agent, steps, updated_at
+                "SELECT id, project_dir, description, category, passes, in_progress, agent, steps, work_count, completion_criteria, updated_at
                  FROM features WHERE project_dir = ?1 ORDER BY id",
             )?;
 
@@ -321,7 +354,9 @@ impl Database {
                         in_progress: row.get(5)?,
                         agent: row.get(6)?,
                         steps: parse_steps(row.get(7)?),
-                        updated_at: row.get(8)?,
+                        work_count: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
+                        completion_criteria: row.get(9)?,
+                        updated_at: row.get(10)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -329,7 +364,7 @@ impl Database {
             Ok(features)
         } else {
             let mut stmt = conn.prepare(
-                "SELECT id, project_dir, description, category, passes, in_progress, agent, steps, updated_at
+                "SELECT id, project_dir, description, category, passes, in_progress, agent, steps, work_count, completion_criteria, updated_at
                  FROM features ORDER BY project_dir, id",
             )?;
 
@@ -344,7 +379,9 @@ impl Database {
                         in_progress: row.get(5)?,
                         agent: row.get(6)?,
                         steps: parse_steps(row.get(7)?),
-                        updated_at: row.get(8)?,
+                        work_count: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
+                        completion_criteria: row.get(9)?,
+                        updated_at: row.get(10)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -404,6 +441,24 @@ impl Database {
             params![status, session_id],
         )?;
         Ok(())
+    }
+
+    /// Clean up stale sessions that have been inactive for more than the specified minutes.
+    /// Returns the number of sessions marked as ended.
+    pub fn cleanup_stale_sessions(&self, inactive_minutes: i64) -> Result<usize, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE sessions SET status = 'ended'
+             WHERE status = 'active'
+             AND datetime(last_activity) < datetime('now', ?1)",
+            params![format!("-{} minutes", inactive_minutes)],
+        )?;
+
+        if rows > 0 {
+            tracing::info!("Cleaned up {} stale sessions (inactive > {} minutes)", rows, inactive_minutes);
+        }
+
+        Ok(rows)
     }
 
     pub fn get_stats(&self) -> Result<Stats, rusqlite::Error> {

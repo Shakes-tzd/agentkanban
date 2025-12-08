@@ -1,7 +1,6 @@
 use crate::db::{AgentEvent, DbState, Feature, Session};
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
@@ -34,6 +33,7 @@ pub async fn start_server(
         .route("/health", get(health))
         .route("/events", get(get_events).post(receive_event))
         .route("/events/feature-update", post(receive_feature_update))
+        .route("/features", get(get_features))
         .route("/events/{id}/link", post(link_event))
         .route("/sessions/start", post(session_start))
         .route("/sessions/end", post(session_end))
@@ -75,6 +75,20 @@ async fn get_events(
     };
 
     Json(events)
+}
+
+#[derive(Deserialize)]
+struct FeaturesQuery {
+    project_dir: Option<String>,
+}
+
+async fn get_features(
+    State(state): State<AppState>,
+    Query(query): Query<FeaturesQuery>,
+) -> Json<Vec<Feature>> {
+    let db: tauri::State<DbState> = state.app.state();
+    let features = db.0.get_features(query.project_dir.as_deref()).unwrap_or_default();
+    Json(features)
 }
 
 #[derive(Deserialize)]
@@ -330,6 +344,9 @@ fn sync_features_from_file(db: &tauri::State<DbState>, project_dir: &str, app: &
                 in_progress: f["inProgress"].as_bool().unwrap_or(false),
                 agent: f["agent"].as_str().map(String::from),
                 steps,
+                work_count: f["workCount"].as_i64().unwrap_or(0) as i32,
+                completion_criteria: f["completionCriteria"].as_object()
+                    .map(|_| serde_json::to_string(&f["completionCriteria"]).unwrap_or_default()),
                 updated_at: chrono::Utc::now().to_rfc3339(),
             }
         })

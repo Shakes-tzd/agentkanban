@@ -1,12 +1,27 @@
 {
-  "name": "agentkanban",
-  "description": "AgentKanban plugin marketplace",
+  "name": "AgentKanban",
+  "owner": {
+    "name": "Shakes Dlamini",
+    "email": "shakestzd@gmail.com",
+    "url": "https://github.com/Shakes-tzd"
+  },
+  "description": "Long-running agent workflow with persistent task management and observability",
+  "version": "0.1.0",
   "plugins": [
     {
       "name": "agentkanban",
       "version": "0.1.0",
+      "source": "./",
       "description": "Long-running agent workflow with persistent task management",
-      "path": "."
+      "category": "Productivity",
+      "tags": ["kanban", "tasks", "workflow", "observability"],
+      "author": {
+        "name": "Shakes Dlamini",
+        "url": "https://github.com/Shakes-tzd"
+      },
+      "repository": "https://github.com/Shakes-tzd/agentkanban",
+      "license": "MIT",
+      "strict": true
     }
   ]
 }

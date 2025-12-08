@@ -8,8 +8,9 @@
       "Verify window opens with AgentKanban title",
       "Verify system tray icon appears"
     ],
-    "passes": true,
-    "inProgress": false
+    "passes": false,
+    "inProgress": false,
+    "workCount": 16
   },
   {
     "category": "functional",
@@ -106,8 +107,9 @@
       "Trigger Scan Projects from tray menu",
       "Verify project is discovered"
     ],
-    "passes": true,
-    "inProgress": false
+    "passes": false,
+    "inProgress": false,
+    "workCount": 1
   },
   {
     "category": "infrastructure",
@@ -117,8 +119,9 @@
       "Start a Claude Code session",
       "Verify session-start hook fires"
     ],
-    "passes": true,
-    "inProgress": false
+    "passes": false,
+    "inProgress": true,
+    "workCount": 12
   },
   {
     "category": "documentation",
@@ -137,8 +140,9 @@
       "Add project selector dropdown in the UI header",
       "Filter kanban board to show only selected project's features"
     ],
-    "passes": true,
-    "inProgress": false
+    "passes": false,
+    "inProgress": false,
+    "workCount": 2
   },
   {
     "category": "functional",
@@ -158,8 +162,8 @@
       "Add visual indicators for success/failure"
     ],
     "passes": false,
-    "inProgress": true,
-    "workCount": 3
+    "inProgress": false,
+    "workCount": 11
   },
   {
     "category": "ui",
@@ -170,9 +174,9 @@
       "Only create features for constructive tools (Edit, Write, Task)",
       "Add deduplication for auto-created features"
     ],
-    "passes": true,
+    "passes": false,
     "inProgress": false,
-    "workCount": 4,
+    "workCount": 33,
     "completionCriteria": {
       "type": "build",
       "description": "Build must pass",
@@ -200,6 +204,24 @@
     "passes": true,
     "inProgress": false,
     "workCount": 3,
+    "completionCriteria": {
+      "type": "work_count",
+      "count": 3,
+      "description": "Auto-complete after sustained work",
+      "success_required": true
+    }
+  },
+  {
+    "category": "functional",
+    "description": "Research Claude OTEL metrics",
+    "steps": [
+      "Review agent task results",
+      "Verify the subtask was completed successfully",
+      "Run /complete-feature when done"
+    ],
+    "passes": false,
+    "inProgress": false,
+    "workCount": 0,
     "completionCriteria": {
       "type": "work_count",
       "count": 3,

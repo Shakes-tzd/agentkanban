@@ -1,11 +1,11 @@
 use crate::db::{AgentEvent, DbState, Feature};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use notify_debouncer_mini::{new_debouncer, DebouncedEvent};
+use notify::RecursiveMode;
+use notify_debouncer_mini::new_debouncer;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{Emitter, Manager};
 use tokio::sync::broadcast;
 
 pub fn start_watching(
@@ -68,10 +68,14 @@ fn handle_file_event(
 ) {
     let path_str = path.to_string_lossy();
 
-    // Handle transcript files (Claude Code sessions)
-    if path_str.ends_with(".jsonl") && path_str.contains(".claude/projects") {
-        handle_transcript_change(app, event_tx, path);
-    }
+    // NOTE: We no longer create TranscriptUpdated events from the watcher.
+    // The Claude Code hooks (PostToolUse, SessionStart, etc.) are the authoritative
+    // source for events and provide the correct session_id from hook input JSON.
+    // The watcher's transcript filename-based session_id was causing mismatches.
+    //
+    // if path_str.ends_with(".jsonl") && path_str.contains(".claude/projects") {
+    //     handle_transcript_change(app, event_tx, path);
+    // }
 
     // Handle feature_list.json changes
     if path_str.ends_with("feature_list.json") {
@@ -427,11 +431,18 @@ fn handle_feature_list_change(
         .map(|f| f.description.clone())
         .collect();
 
-    // Parse new features
+    // Build a map of existing features by ID to preserve their status
+    let old_features_map: std::collections::HashMap<String, &Feature> = old_features
+        .iter()
+        .map(|f| (f.id.clone(), f))
+        .collect();
+
+    // Parse new features, preserving in_progress from database (hooks are source of truth)
     let parsed_features: Vec<Feature> = features
         .iter()
         .enumerate()
         .map(|(i, f)| {
+            let feature_id = format!("{}:{}", project_dir, i);
             let steps = f["steps"]
                 .as_array()
                 .map(|arr| {
@@ -440,53 +451,85 @@ fn handle_feature_list_change(
                         .collect()
                 });
 
+            // Get existing feature if any
+            let existing = old_features_map.get(&feature_id);
+
+            // For in_progress: prefer database value (set by hooks) over JSON
+            // Only use JSON value if this is a new feature not in DB
+            let in_progress = existing
+                .map(|e| e.in_progress)
+                .unwrap_or_else(|| f["inProgress"].as_bool().unwrap_or(false));
+
+            // For passes: also prefer database (hooks can mark complete)
+            // but allow JSON to mark as complete too (manual edits)
+            let json_passes = f["passes"].as_bool().unwrap_or(false);
+            let passes = existing
+                .map(|e| e.passes || json_passes) // DB or JSON can mark complete
+                .unwrap_or(json_passes);
+
+            // For work_count: prefer database value (incremented by hooks)
+            let work_count = existing
+                .map(|e| e.work_count)
+                .unwrap_or_else(|| f["workCount"].as_i64().unwrap_or(0) as i32);
+
             Feature {
-                id: format!("{}:{}", project_dir, i),
+                id: feature_id,
                 project_dir: project_dir.clone(),
                 description: f["description"].as_str().unwrap_or("").to_string(),
                 category: f["category"].as_str().unwrap_or("functional").to_string(),
-                passes: f["passes"].as_bool().unwrap_or(false),
-                in_progress: f["inProgress"].as_bool().unwrap_or(false),
+                passes,
+                in_progress,
                 agent: f["agent"].as_str().map(String::from),
                 steps,
+                work_count,
+                completion_criteria: f["completionCriteria"].as_object()
+                    .map(|_| serde_json::to_string(&f["completionCriteria"]).unwrap_or_default()),
                 updated_at: chrono::Utc::now().to_rfc3339(),
             }
         })
         .collect();
 
-    // Detect newly completed features
+    // Detect newly completed features (only from JSON - hooks record their own events)
     for feature in &parsed_features {
         if feature.passes && !old_completed.contains(&feature.description) {
-            // New completion!
-            let event = AgentEvent {
-                id: None,
-                event_type: "FeatureCompleted".to_string(),
-                source_agent: feature
-                    .agent
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                session_id: "file-watch".to_string(),
-                project_dir: project_dir.clone(),
-                tool_name: Some(feature.description.clone()),
-                payload: Some(
-                    serde_json::json!({
-                        "category": feature.category
-                    })
-                    .to_string(),
-                ),
-                feature_id: Some(feature.id.clone()),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            };
+            // Check if this completion came from JSON (not already in DB)
+            let was_complete_in_db = old_features_map
+                .get(&feature.id)
+                .map(|f| f.passes)
+                .unwrap_or(false);
 
-            let _ = db.0.insert_event(&event);
-            let _ = event_tx.send(event);
+            if !was_complete_in_db {
+                // New completion from JSON file
+                let event = AgentEvent {
+                    id: None,
+                    event_type: "FeatureCompleted".to_string(),
+                    source_agent: feature
+                        .agent
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    session_id: "file-watch".to_string(),
+                    project_dir: project_dir.clone(),
+                    tool_name: Some(feature.description.clone()),
+                    payload: Some(
+                        serde_json::json!({
+                            "category": feature.category
+                        })
+                        .to_string(),
+                    ),
+                    feature_id: Some(feature.id.clone()),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
 
-            // Send desktop notification
-            send_notification(app, "✅ Feature Completed", &feature.description);
+                let _ = db.0.insert_event(&event);
+                let _ = event_tx.send(event);
+
+                // Send desktop notification
+                send_notification(app, "✅ Feature Completed", &feature.description);
+            }
         }
     }
 
-    // Sync all features to database
+    // Sync features to database (preserving status from hooks)
     let _ = db.0.sync_features(&project_dir, parsed_features);
 
     // Emit refresh event to frontend

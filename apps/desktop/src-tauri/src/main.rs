@@ -2,8 +2,10 @@
 
 mod commands;
 mod db;
+mod plugin_manager;
 mod server;
 mod watcher;
+mod workflow_service;
 
 use std::sync::Arc;
 use tauri::{
@@ -30,20 +32,30 @@ fn main() {
             let handle = app.handle().clone();
             let _event_tx_clone = Arc::clone(&event_tx);
 
-            // Initialize database
-            let db_path = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data dir")
-                .join("agentkanban.db");
+            // Initialize database at ~/.agentkanban/agentkanban.db
+            // This path is shared with Claude Code hooks for single source of truth
+            let db_path = db::get_standard_db_path();
 
             // Ensure parent directory exists
             if let Some(parent) = db_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
 
+            tracing::info!("Using shared database at {:?}", db_path);
             let database = db::Database::new(&db_path)?;
             app.manage(db::DbState(Arc::new(database)));
+
+            // Setup Claude Code plugin
+            let plugin_path = plugin_manager::PluginManager::default_plugin_path();
+            let pm = plugin_manager::PluginManager::new(plugin_path);
+            match pm.ensure_plugin_installed() {
+                Ok(status) => {
+                    tracing::info!("Plugin status: {:?}", status);
+                }
+                Err(e) => {
+                    tracing::warn!("Plugin setup warning: {}. Plugin features may be limited.", e);
+                }
+            }
 
             // Start file watcher in background thread
             let watcher_handle = handle.clone();
@@ -69,6 +81,37 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 while let Ok(event) = event_rx.recv().await {
                     let _ = event_handle.emit("agent-event", &event);
+                }
+            });
+
+            // Cleanup stale sessions on startup and periodically (every 2 minutes)
+            let cleanup_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                // Run cleanup immediately on startup
+                if let Some(db_state) = cleanup_handle.try_state::<db::DbState>() {
+                    if let Ok(count) = db_state.0.cleanup_stale_sessions(15) {
+                        if count > 0 {
+                            tracing::info!("Startup cleanup: marked {} stale sessions as ended", count);
+                        }
+                    }
+                }
+
+                // Then run periodically (every 2 minutes)
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+                loop {
+                    interval.tick().await;
+                    if let Some(db_state) = cleanup_handle.try_state::<db::DbState>() {
+                        match db_state.0.cleanup_stale_sessions(15) {
+                            Ok(count) if count > 0 => {
+                                // Notify frontend to refresh sessions
+                                let _ = cleanup_handle.emit("sessions-updated", ());
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to cleanup stale sessions: {}", e);
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             });
 
@@ -127,6 +170,10 @@ fn main() {
             commands::watch_project,
             commands::get_config,
             commands::save_config,
+            commands::get_plugin_status,
+            commands::install_plugin,
+            commands::get_plugin_path,
+            commands::install_integration,
         ])
         .on_window_event(|window, event| {
             // Minimize to tray instead of closing
