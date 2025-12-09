@@ -2,7 +2,7 @@
 
 import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
-import { AgentKanbanClient } from '@agentkanban/client';
+import { IjokaClient } from '@ijoka/client';
 import path from 'path';
 
 // Parse args: node dist/cli.js [command] [args...]
@@ -11,12 +11,12 @@ const command = args[0] || 'echo'; // Default to echo for safety if no command
 const commandArgs = args.slice(1);
 
 async function main() {
-    const client = new AgentKanbanClient();
+    const client = new IjokaClient();
     const sessionId = uuidv4();
     const projectDir = process.cwd();
 
     // 1. Notify start
-    console.log(`[AgentKanban] Starting session ${sessionId}...`);
+    console.log(`[Ijoka] Starting session ${sessionId}...`);
     await client.startSession({
         sessionId,
         sourceAgent: 'gemini-cli',
@@ -24,7 +24,7 @@ async function main() {
     });
 
     // 2. Spawn the actual tool
-    console.log(`[AgentKanban] Running: ${command} ${commandArgs.join(' ')}`);
+    console.log(`[Ijoka] Running: ${command} ${commandArgs.join(' ')}`);
 
     const child = spawn(command, commandArgs, {
         stdio: 'inherit', // Pipe stdin/out/err directly
@@ -33,7 +33,7 @@ async function main() {
 
     // 3. Handle exit
     child.on('close', async (code) => {
-        console.log(`[AgentKanban] Process exited with code ${code}`);
+        console.log(`[Ijoka] Process exited with code ${code}`);
 
         // Notify end
         await client.endSession({

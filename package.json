@@ -1,11 +1,11 @@
 {
-  "name": "agentkanban",
+  "name": "ijoka",
   "version": "0.1.0",
   "private": true,
-  "description": "Unified observability and task management for AI coding agents",
+  "description": "Unified observability and orchestration for AI coding agents - yoking agents together",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/agentkanban"
+    "url": "https://github.com/Shakes-tzd/ijoka"
   },
   "keywords": [
     "ai",
@@ -13,17 +13,17 @@
     "claude",
     "codex",
     "gemini",
-    "kanban",
+    "orchestration",
     "observability",
     "tauri"
   ],
   "author": "Shakes",
   "license": "MIT",
   "scripts": {
-    "dev": "pnpm --filter @agentkanban/desktop dev",
-    "build": "pnpm --filter @agentkanban/desktop build",
-    "desktop:dev": "pnpm --filter @agentkanban/desktop dev",
-    "desktop:build": "pnpm --filter @agentkanban/desktop build",
+    "dev": "pnpm --filter @ijoka/desktop dev",
+    "build": "pnpm --filter @ijoka/desktop build",
+    "desktop:dev": "pnpm --filter @ijoka/desktop dev",
+    "desktop:build": "pnpm --filter @ijoka/desktop build",
     "plugin:install": "cd packages/claude-plugin && claude /plugin install .",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"

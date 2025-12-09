@@ -1,0 +1,129 @@
+ui_specification:
+  theme_philosophy:
+    style: "Cyber-minimal," terminal-inspired data overlays, high-contrast status indicators.
+    speed_focus: Real-time socket streaming (for agent outputs), low-latency state changes.
+    visual_hierarchy: Emphasizes "Autonomy vs. Intervention." The UI highlights where the Agents are succeeding versus where they need Human help.
+
+  layout_structure:
+    global_navigation:
+      type: Command Bar (CLI-style dropdown).
+      access: Mouse click or keyboard shortcut ('Cmd+K').
+      contents: Agent Swarms, Feature Backlogs, Model Configs, API Keys, Logs.
+    
+    board_view:
+      layout: Pipeline Flow (Agent Phases).
+      default_columns:
+        left: "Icebox" (Stored feature ideas, inactive).
+        center: "Spec Definition" (The input zone; features waiting for agent pickup).
+        right: "Deployed" (Features successfully merged/deployed).
+      column_behavior:
+        visibility_logic: 
+          - "Spec Definition" is the anchor (always visible).
+          - Only one "Active Agent Phase" (e.g., Coding, QA) visible at a time to reduce noise from parallel swarms.
+          - "Focus Mode": Clicking an active column creates a split-screen view: Feature Spec (left) vs. Agent Live Output (right).
+        custom_columns:
+          context: Represents Agent Roles (e.g., Architect, Coder, Reviewer).
+          visual_representation: Status bars showing aggregate swarm progress.
+      zoom_view:
+        trigger: "Inspect Swarm" icon.
+        behavior: Enters a node-graph view showing how different agents are collaborating on features in this column.
+
+  column_component:
+    properties:
+      header: Agent Role Name (e.g., "DevBot-Alpha") and Active Thread Count.
+      background_color: State-based (Blue=Idle, Green=Active, Red=Error/Blocked).
+    sorting_logic:
+      method: Automatic based on "Confidence Score" or "Completion %".
+      manual_sorting: Disabled (Agents pull work automatically based on capacity).
+
+  card_component: # Now represents a "Feature"
+    anatomy:
+      top_left:
+        - Feature ID.
+        - Token Cost (real-time counter).
+        - Model Model (e.g., GPT-4o, Claude 3.5).
+      center:
+        - Feature Title / User Story.
+        - Streaming Text Indicator (if agent is currently writing).
+      bottom_left:
+        - Assigned Swarm/Agent Icon.
+      bottom_right:
+        - Confidence Score (e.g., 98%).
+        - "Human Help Needed" Indicator (Hand icon).
+      
+    styling_rules:
+      background_color: Inherits agent state (pulsing opacity if processing).
+      done_state: "Deployed" cards become static/read-only with a link to the Git commit.
+      
+    special_states:
+      golden_ticket: "Priority Compute"
+        trigger: User toggles "High Priority."
+        visual: Gold border + "GPU" icon.
+        behavior: Allocates expensive/smarter models to this feature; jumps queue.
+      
+      stalled_warning: "Loop Detection"
+        trigger: Agent repeats same error or step > X times.
+        visual: A "Infinite Loop" icon with a red bubble showing retry count.
+        meaning: Agent is stuck/hallucinating; requires human override.
+      
+      auto_archived: "Garbage Collect"
+        trigger: Feature deemed "Not Feasible" by Architect Agent.
+        action: Moves to Icebox with an attached "Rejection Reason" report.
+        visual: Stamped with "Rejected by System."
+    
+    interactions:
+      drag_and_drop: moving a card to a column forces a specific agent to take over (Manual Override).
+      click: Opens "Terminal View" (shows raw agent logs/code diffs).
+      hover_activity: overlays the last 3 "Thoughts" or "Reasoning steps" the agent generated.
+
+  global_widgets:
+    pinned_stack: "Live Monitors"
+      location: Bottom Left Corner.
+      function: Watch specific features currently compiling or testing.
+      visual: Mini terminal windows.
+      behavior: 
+        - Shows green/red dots for passing/failing tests in real-time.
+        - Click opens full test logs.
+    
+    notification_stack: "Intervention Queue"
+      location: Bottom Right Corner.
+      function: Requests for human approval (e.g., "Agent needs permission to execute shell command").
+      visual: Stack of alert cards.
+      interaction: 
+        - "Approve/Deny" buttons directly on the notification edge.
+        - 'N' key fans open the queue for bulk approval.
+
+  activity_view: "Swarm Logs"
+    structure: Three-column timeline layout.
+    columns:
+      1: "Prompted" (Human inputs).
+      2: "Reasoning" (Internal agent monologues/decisions).
+      3: "Actions" (File writes, API calls, CLI commands).
+    visuals: 
+      - Time gaps represent "latency" or "API rate limiting."
+      - Code blocks are syntax highlighted.
+
+  search_and_filter:
+    global_search:
+      trigger: 'K' key.
+      visual: Command palette.
+      capabilities: Search code snippets, error logs, or feature titles.
+    board_filter:
+      location: Top of board.
+      function: Filter by Model Used, Cost > $X, or Error Status.
+
+  settings_configuration:
+    auto_close_timer: "Timeout Threshold"
+      ui: Slider (Seconds/Minutes).
+      function: Kills agent process if no output received within time limit.
+    public_sharing:
+      toggle: "Public Demo Mode."
+      output: Read-only view of the feature being built (hides API keys/internal logs).
+
+  keyboard_shortcuts:
+    J: Open Command Bar.
+    K: Global Log Search.
+    N: Toggle Intervention Queue.
+    T: Open Terminal/Console view for selected card.
+    Space: Pause/Resume active Agent on selected card.
+    Escape: Close Inspect views.

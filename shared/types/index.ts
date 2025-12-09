@@ -1,6 +1,6 @@
 /**
- * AgentKanban Shared Types
- * 
+ * Ijoka Shared Types
+ *
  * These types are shared between the desktop app and Claude plugin
  */
 

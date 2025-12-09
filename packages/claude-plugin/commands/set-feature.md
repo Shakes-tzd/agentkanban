@@ -98,4 +98,4 @@ Claude should proactively manage features by:
 3. **For new work**: Either find matching feature or create new one
 4. **For fixes/enhancements**: Use /set-feature to properly attribute work
 
-This ensures ALL activity is properly linked to features in AgentKanban.
+This ensures ALL activity is properly linked to features in Ijoka.

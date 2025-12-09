@@ -7,19 +7,19 @@ Spawn a Haiku subagent to intelligently classify recent activity and link it to 
 Use the Task tool to spawn a Haiku agent that will:
 
 1. Read the project's `feature_list.json` to get available features
-2. Query AgentKanban for recent unlinked events (last 20 events without feature_id)
+2. Query Ijoka for recent unlinked events (last 20 events without feature_id)
 3. For each unlinked event, determine the best matching feature based on:
    - Tool name and input (file paths, commands, patterns)
    - Semantic meaning of the work being done
    - Feature descriptions and steps
-4. Update the feature links via the AgentKanban API
+4. Update the feature links via the Ijoka API
 
 ```
 Task tool parameters:
 - subagent_type: "general-purpose"
 - model: "haiku"
 - prompt: |
-    You are a feature classifier for the AgentKanban observability system.
+    You are a feature classifier for the Ijoka observability system.
 
     Your task:
     1. Read feature_list.json from the current project directory

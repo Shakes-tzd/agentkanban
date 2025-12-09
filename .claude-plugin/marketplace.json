@@ -1,15 +1,15 @@
 {
-  "name": "agentkanban",
+  "name": "ijoka",
   "owner": {
     "name": "Shakes-tzd",
     "url": "https://github.com/Shakes-tzd"
   },
-  "description": "AgentKanban plugin marketplace - Unified observability for AI coding agents",
+  "description": "Ijoka plugin marketplace - Unified observability and orchestration for AI coding agents",
   "plugins": [
     {
-      "name": "agentkanban",
+      "name": "ijoka",
       "version": "0.1.0",
-      "description": "Long-running agent workflow with persistent task management",
+      "description": "Long-running agent workflow with persistent task management and orchestration",
       "source": "./packages/claude-plugin"
     }
   ]

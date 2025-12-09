@@ -1,31 +1,31 @@
-# 🎯 AgentKanban
+# Ijoka
 
-**Unified observability and task management for AI coding agents.**
+**Unified observability and orchestration for AI coding agents - yoking agents together.**
 
-AgentKanban provides a lightweight desktop application and Claude Code plugin that implements [Anthropic's long-running agent pattern](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) for coordinating work across multiple AI coding assistants.
+Ijoka (Zulu for "yoke") provides a lightweight desktop application and Claude Code plugin that implements [Anthropic's long-running agent pattern](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) for coordinating work across multiple AI coding assistants.
 
-![AgentKanban Screenshot](docs/screenshot.png)
+![Ijoka Screenshot](docs/screenshot.png)
 
 ## Features
 
-- 🖥️ **Desktop App** — Lightweight Tauri app with system tray, native notifications
-- 📋 **Kanban Board** — Visual task management (To Do → In Progress → Done)  
-- 🔄 **Real-time Sync** — Watch `feature_list.json` and session transcripts
-- 🤖 **Multi-Agent Support** — Claude Code, Codex CLI, Gemini CLI
-- 🔌 **Claude Plugin** — Hooks, commands, and agents for seamless integration
-- 📊 **Activity Timeline** — Track what each agent is doing
-- 🔔 **Notifications** — Native OS alerts on feature completion
+- **Desktop App** — Lightweight Tauri app with system tray, native notifications
+- **Kanban Board** — Visual task management (To Do → In Progress → Done)
+- **Real-time Sync** — Watch `feature_list.json` and session transcripts
+- **Multi-Agent Support** — Claude Code, Codex CLI, Gemini CLI
+- **Claude Plugin** — Hooks, commands, and agents for seamless integration
+- **Activity Timeline** — Track what each agent is doing
+- **Notifications** — Native OS alerts on feature completion
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              AgentKanban Desktop (Tauri)                    │
+│                   Ijoka Desktop (Tauri)                     │
 │  - Kanban Board UI                                          │
 │  - Activity Timeline                                        │
 │  - Progress Stats                                           │
 └─────────────────────────────────────────────────────────────┘
-                          ▲ 
+                          ▲
            SQLite + File Watcher + HTTP Server
                           │
     ┌─────────────────────┼─────────────────────┐
@@ -53,8 +53,8 @@ AgentKanban provides a lightweight desktop application and Claude Code plugin th
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/agentkanban.git
-cd agentkanban
+git clone https://github.com/Shakes-tzd/ijoka.git
+cd ijoka
 
 # Install dependencies
 pnpm install
@@ -80,7 +80,7 @@ claude /plugin install .
 ## Project Structure
 
 ```
-agentkanban/
+ijoka/
 ├── apps/
 │   └── desktop/              # Tauri desktop application
 │       ├── src-tauri/        # Rust backend
@@ -111,7 +111,7 @@ agentkanban/
 
 ## The Long-Running Agent Pattern
 
-AgentKanban implements Anthropic's recommended pattern for multi-session development:
+Ijoka implements Anthropic's recommended pattern for multi-session development:
 
 ### `feature_list.json`
 
@@ -152,9 +152,11 @@ A persistent task queue that survives across sessions:
 ### Desktop App
 
 Settings are stored in:
-- **macOS**: `~/Library/Application Support/com.agentkanban.app/`
-- **Windows**: `%APPDATA%\com.agentkanban.app\`
-- **Linux**: `~/.config/com.agentkanban.app/`
+- **macOS**: `~/Library/Application Support/com.ijoka.app/`
+- **Windows**: `%APPDATA%\com.ijoka.app\`
+- **Linux**: `~/.config/com.ijoka.app/`
+
+Database is stored at `~/.ijoka/ijoka.db`
 
 ### Plugin
 
@@ -162,7 +164,7 @@ Configure watched projects in `.claude/settings.json`:
 
 ```json
 {
-  "agentkanban": {
+  "ijoka": {
     "watchedProjects": [
       "/path/to/project1",
       "/path/to/project2"
@@ -195,4 +197,4 @@ MIT © Shakes
 
 ---
 
-Built with ❤️ using [Tauri](https://tauri.app), [Vue](https://vuejs.org), and [Claude](https://claude.ai)
+Built with [Tauri](https://tauri.app), [Vue](https://vuejs.org), and [Claude](https://claude.ai)

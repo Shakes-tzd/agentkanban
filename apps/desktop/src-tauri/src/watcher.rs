@@ -1,3 +1,19 @@
+//! File Watcher Module
+//!
+//! DEPRECATION NOTICE: The feature_list.json watching code in this module is deprecated
+//! and will be removed once Phase 2 (MCP Server) is complete.
+//!
+//! The new architecture uses:
+//! - Graph DB (Memgraph) as the source of truth
+//! - MCP tools for agent<->Ijoka communication
+//! - SQLite as a read-only cache synced from Graph DB
+//!
+//! Until MCP is ready, this file watcher provides backwards compatibility for:
+//! - Manual feature_list.json edits
+//! - Legacy workflows that depend on file-based state
+//!
+//! TODO: Remove feature_list.json watching after MCP server implementation (Phase 2)
+
 use crate::db::{AgentEvent, DbState, Feature};
 use notify::RecursiveMode;
 use notify_debouncer_mini::new_debouncer;
@@ -473,7 +489,7 @@ fn handle_feature_list_change(
                 .unwrap_or_else(|| f["workCount"].as_i64().unwrap_or(0) as i32);
 
             Feature {
-                id: feature_id,
+                id: feature_id.clone(),
                 project_dir: project_dir.clone(),
                 description: f["description"].as_str().unwrap_or("").to_string(),
                 category: f["category"].as_str().unwrap_or("functional").to_string(),
@@ -485,6 +501,17 @@ fn handle_feature_list_change(
                 completion_criteria: f["completionCriteria"].as_object()
                     .map(|_| serde_json::to_string(&f["completionCriteria"]).unwrap_or_default()),
                 updated_at: chrono::Utc::now().to_rfc3339(),
+                // Preserve agent-managed state from existing feature, or use defaults
+                confidence: existing.and_then(|e| e.confidence),
+                model: existing.and_then(|e| e.model.clone()).or_else(|| f["model"].as_str().map(String::from)),
+                is_streaming: existing.map(|e| e.is_streaming).unwrap_or(false),
+                retry_count: existing.map(|e| e.retry_count).unwrap_or(0),
+                token_cost: existing.and_then(|e| e.token_cost),
+                has_error: existing.map(|e| e.has_error).unwrap_or(false),
+                last_agent_update: existing.and_then(|e| e.last_agent_update.clone()),
+                // Preserve human override state from existing feature
+                manual_priority: existing.and_then(|e| e.manual_priority.clone()).or_else(|| f["manualPriority"].as_str().map(String::from)),
+                human_override_until: existing.and_then(|e| e.human_override_until.clone()),
             }
         })
         .collect();

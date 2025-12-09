@@ -1,13 +1,13 @@
 {
-  "name": "agentkanban",
+  "name": "ijoka",
   "version": "0.1.0",
-  "description": "Long-running agent workflow with persistent task management",
+  "description": "Unified observability and orchestration for AI coding agents - yoking agents together",
   "author": {
-    "name": "AgentKanban",
-    "url": "https://github.com/Shakes-tzd/agentkanban"
+    "name": "Ijoka",
+    "url": "https://github.com/Shakes-tzd/ijoka"
   },
-  "homepage": "https://agentkanban.com",
-  "repository": "https://github.com/Shakes-tzd/agentkanban",
+  "homepage": "https://ijoka.dev",
+  "repository": "https://github.com/Shakes-tzd/ijoka",
   "license": "MIT",
   "keywords": [
     "kanban",

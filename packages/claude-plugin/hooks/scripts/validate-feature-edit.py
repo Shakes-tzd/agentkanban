@@ -4,7 +4,7 @@
 # dependencies = []
 # ///
 """
-AgentKanban Feature Edit Validator
+Ijoka Feature Edit Validator
 PreToolUse hook that validates Write/Edit operations on feature_list.json.
 Blocks changes that would break the feature list structure.
 """

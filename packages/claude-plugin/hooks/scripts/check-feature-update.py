@@ -1,10 +1,10 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.9"
-# dependencies = []
+# dependencies = ["neo4j>=5.0"]
 # ///
 """
-AgentKanban Feature Update Hook
+Ijoka Feature Update Hook
 Runs after Write/Edit tool calls to detect feature_list.json changes
 """
 
@@ -15,9 +15,10 @@ import hashlib
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+import graph_db_helper as db_helper
 
-SYNC_SERVER = os.environ.get("AGENTKANBAN_SERVER", "http://127.0.0.1:4000")
-CACHE_DIR = Path.home() / ".cache" / "agentkanban"
+SYNC_SERVER = os.environ.get("IJOKA_SERVER", "http://127.0.0.1:4000")
+CACHE_DIR = Path.home() / ".cache" / "ijoka"
 
 
 def get_cache_path(project_dir: str) -> Path:
@@ -48,7 +49,7 @@ def save_cached_features(project_dir: str, features: list, content_hash: str):
 
 
 def send_to_server(project_dir: str, stats: dict, changed_features: list):
-    """Send feature update to AgentKanban sync server."""
+    """Send feature update to Ijoka sync server."""
     try:
         data = json.dumps({
             "projectDir": project_dir,

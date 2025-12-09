@@ -14,7 +14,7 @@ interface AgentEvent {
   createdAt: string
 }
 
-const props = defineProps<{
+defineProps<{
   event: AgentEvent | null
 }>()
 
