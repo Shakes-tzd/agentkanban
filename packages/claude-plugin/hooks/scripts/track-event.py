@@ -580,7 +580,8 @@ def main():
             f.write(f"is_mcp_meta_tool: {is_mcp_meta_tool(tool_name)}\n")
 
     session_id = hook_input.get("session_id") or os.environ.get("CLAUDE_SESSION_ID", "unknown")
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    # Claude Code provides 'cwd' in hook_input; fall back to env var or detection
+    project_dir = hook_input.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR", "")
 
     if not project_dir:
         # Try to detect project from file path by looking for common project markers
