@@ -553,7 +553,9 @@ def insert_event(
     project_dir: str,
     tool_name: Optional[str] = None,
     payload: Optional[dict] = None,
-    feature_id: Optional[str] = None
+    feature_id: Optional[str] = None,
+    success: bool = True,
+    summary: Optional[str] = None
 ) -> str:
     """Insert an event and return its ID."""
     event_id = str(uuid.uuid4())
@@ -577,7 +579,11 @@ def insert_event(
             event_type: $eventType,
             tool_name: $toolName,
             payload: $payload,
-            timestamp: datetime()
+            timestamp: datetime(),
+            source_agent: $sourceAgent,
+            session_id: $sessionId,
+            success: $success,
+            summary: $summary
         })-[:TRIGGERED_BY]->(s)
     """
     params = {
@@ -588,6 +594,8 @@ def insert_event(
         "eventType": event_type,
         "toolName": tool_name,
         "payload": json.dumps(payload) if payload else None,
+        "success": success,
+        "summary": summary,
     }
 
     # Link to feature if provided

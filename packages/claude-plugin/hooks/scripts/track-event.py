@@ -312,6 +312,10 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
         payload["featureCategory"] = active_feature["category"]
         payload["featureDescription"] = active_feature["description"]
 
+    # Extract success status and summary for top-level Event fields
+    is_success = not tool_result.get("is_error", False)
+    summary = summarize_input(tool_name, tool_input)
+
     # Insert event into database
     db_helper.insert_event(
         event_type="ToolCall",
@@ -320,7 +324,9 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
         project_dir=project_dir,
         tool_name=tool_name,
         payload=payload,
-        feature_id=feature_id
+        feature_id=feature_id,
+        success=is_success,
+        summary=summary
     )
 
     # Update session activity
@@ -343,7 +349,9 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
             session_id=session_id,
             project_dir=project_dir,
             payload=completion_payload,
-            feature_id=feature_id
+            feature_id=feature_id,
+            success=True,
+            summary=f"Feature completed: {completion_status}"
         )
 
     # Generate workflow nudges
@@ -357,9 +365,10 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
 def handle_stop(hook_input: dict, project_dir: str, session_id: str):
     """Handle Stop events - agent finished."""
     stop_hook_input = hook_input.get("stop_hook_input", {})
+    stop_reason = stop_hook_input.get("stop_reason", "unknown")
 
     payload = {
-        "reason": stop_hook_input.get("stop_reason", "unknown"),
+        "reason": stop_reason,
         "lastMessage": (stop_hook_input.get("last_assistant_message", "") or "")[:200]
     }
 
@@ -368,7 +377,9 @@ def handle_stop(hook_input: dict, project_dir: str, session_id: str):
         source_agent="claude-code",
         session_id=session_id,
         project_dir=project_dir,
-        payload=payload
+        payload=payload,
+        success=True,
+        summary=f"Agent stopped: {stop_reason}"
     )
 
 
@@ -380,10 +391,14 @@ def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
     active_feature = db_helper.get_active_feature(project_dir)
     feature_id = active_feature["id"] if active_feature else None
 
+    is_success = not tool_result.get("is_error", False)
+    task_desc = tool_input.get("description", "unknown task")
+    subagent_type = tool_input.get("subagent_type", "")
+
     payload = {
-        "taskDescription": tool_input.get("description", ""),
-        "subagentType": tool_input.get("subagent_type", ""),
-        "success": not tool_result.get("is_error", False),
+        "taskDescription": task_desc,
+        "subagentType": subagent_type,
+        "success": is_success,
         "resultSummary": (str(tool_result.get("output", ""))[:200] if tool_result else "")
     }
 
@@ -397,7 +412,9 @@ def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
         project_dir=project_dir,
         tool_name="Task",
         payload=payload,
-        feature_id=feature_id
+        feature_id=feature_id,
+        success=is_success,
+        summary=f"Subagent ({subagent_type}): {task_desc[:40]}"
     )
 
 
@@ -523,13 +540,18 @@ def handle_user_prompt_submit(hook_input: dict, project_dir: str, session_id: st
     if classification_msg:
         payload["classificationResult"] = classification_msg
 
+    # Create a short summary for the event
+    prompt_preview = user_prompt[:50] + "..." if len(user_prompt) > 50 else user_prompt
+
     db_helper.insert_event(
         event_type="UserQuery",
         source_agent="claude-code",
         session_id=session_id,
         project_dir=project_dir,
         payload=payload,
-        feature_id=feature_id
+        feature_id=feature_id,
+        success=True,
+        summary=f"User: {prompt_preview}"
     )
 
 
