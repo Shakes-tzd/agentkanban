@@ -403,7 +403,19 @@ impl GraphDb {
         let q = query(
             r#"
             MATCH (e:Event)-[:TRIGGERED_BY]->(s:Session)-[:IN_PROJECT]->(p:Project {path: $project_path})
-            RETURN e
+            OPTIONAL MATCH (e)-[:LINKED_TO]->(f:Feature)
+            RETURN e.id as id,
+                   e.event_type as event_type,
+                   e.tool_name as tool_name,
+                   e.payload as payload,
+                   e.summary as summary,
+                   toString(e.timestamp) as timestamp,
+                   e.success as success,
+                   e.source_agent as source_agent,
+                   s.id as session_id,
+                   p.path as project_path,
+                   f.id as feature_id,
+                   f.description as feature_description
             ORDER BY e.timestamp DESC
             LIMIT $limit
             "#,
@@ -415,8 +427,24 @@ impl GraphDb {
 
         let mut events = Vec::new();
         while let Some(row) = result.next().await? {
-            let node: Node = row.get("e")?;
-            events.push(Event::from_node(&node)?);
+            let payload_str: Option<String> = row.get("payload").ok();
+            let payload: Option<serde_json::Value> = payload_str
+                .and_then(|s| serde_json::from_str(&s).ok());
+
+            events.push(Event {
+                id: row.get("id").ok(),
+                event_type: row.get("event_type")?,
+                tool_name: row.get("tool_name").ok(),
+                payload,
+                summary: row.get("summary").ok(),
+                timestamp: row.get("timestamp").ok(),
+                success: row.get("success").ok(),
+                source_agent: row.get("source_agent").ok(),
+                session_id: row.get("session_id").ok(),
+                project_path: row.get("project_path").ok(),
+                feature_id: row.get("feature_id").ok(),
+                feature_description: row.get("feature_description").ok(),
+            });
         }
 
         Ok(events)
@@ -431,7 +459,18 @@ impl GraphDb {
             MATCH (e:Event)
             OPTIONAL MATCH (e)-[:TRIGGERED_BY]->(s:Session)-[:IN_PROJECT]->(p:Project)
             OPTIONAL MATCH (e)-[:LINKED_TO]->(f:Feature)
-            RETURN e, p.path as project_path, f.id as feature_id, f.description as feature_description
+            RETURN e.id as id,
+                   e.event_type as event_type,
+                   e.tool_name as tool_name,
+                   e.payload as payload,
+                   e.summary as summary,
+                   toString(e.timestamp) as timestamp,
+                   e.success as success,
+                   e.source_agent as source_agent,
+                   s.id as session_id,
+                   p.path as project_path,
+                   f.id as feature_id,
+                   f.description as feature_description
             ORDER BY e.timestamp DESC
             LIMIT $limit
             "#,
@@ -442,13 +481,24 @@ impl GraphDb {
 
         let mut events = Vec::new();
         while let Some(row) = result.next().await? {
-            let node: Node = row.get("e")?;
-            let mut event = Event::from_node(&node)?;
-            // Enrich with project and feature info
-            event.project_path = row.get("project_path").ok();
-            event.feature_id = row.get("feature_id").ok();
-            event.feature_description = row.get("feature_description").ok();
-            events.push(event);
+            let payload_str: Option<String> = row.get("payload").ok();
+            let payload: Option<serde_json::Value> = payload_str
+                .and_then(|s| serde_json::from_str(&s).ok());
+
+            events.push(Event {
+                id: row.get("id").ok(),
+                event_type: row.get("event_type")?,
+                tool_name: row.get("tool_name").ok(),
+                payload,
+                summary: row.get("summary").ok(),
+                timestamp: row.get("timestamp").ok(),
+                success: row.get("success").ok(),
+                source_agent: row.get("source_agent").ok(),
+                session_id: row.get("session_id").ok(),
+                project_path: row.get("project_path").ok(),
+                feature_id: row.get("feature_id").ok(),
+                feature_description: row.get("feature_description").ok(),
+            });
         }
 
         Ok(events)
@@ -462,7 +512,17 @@ impl GraphDb {
             r#"
             MATCH (e:Event)-[:LINKED_TO]->(f:Feature {id: $feature_id})
             OPTIONAL MATCH (e)-[:TRIGGERED_BY]->(s:Session)-[:IN_PROJECT]->(p:Project)
-            RETURN e, p.path as project_path, f.description as feature_description
+            RETURN e.id as id,
+                   e.event_type as event_type,
+                   e.tool_name as tool_name,
+                   e.payload as payload,
+                   e.summary as summary,
+                   toString(e.timestamp) as timestamp,
+                   e.success as success,
+                   e.source_agent as source_agent,
+                   s.id as session_id,
+                   p.path as project_path,
+                   f.description as feature_description
             ORDER BY e.timestamp DESC
             LIMIT $limit
             "#,
@@ -474,12 +534,24 @@ impl GraphDb {
 
         let mut events = Vec::new();
         while let Some(row) = result.next().await? {
-            let node: Node = row.get("e")?;
-            let mut event = Event::from_node(&node)?;
-            event.project_path = row.get("project_path").ok();
-            event.feature_id = Some(feature_id.to_string());
-            event.feature_description = row.get("feature_description").ok();
-            events.push(event);
+            let payload_str: Option<String> = row.get("payload").ok();
+            let payload: Option<serde_json::Value> = payload_str
+                .and_then(|s| serde_json::from_str(&s).ok());
+
+            events.push(Event {
+                id: row.get("id").ok(),
+                event_type: row.get("event_type")?,
+                tool_name: row.get("tool_name").ok(),
+                payload,
+                summary: row.get("summary").ok(),
+                timestamp: row.get("timestamp").ok(),
+                success: row.get("success").ok(),
+                source_agent: row.get("source_agent").ok(),
+                session_id: row.get("session_id").ok(),
+                project_path: row.get("project_path").ok(),
+                feature_id: Some(feature_id.to_string()),
+                feature_description: row.get("feature_description").ok(),
+            });
         }
 
         Ok(events)
@@ -1061,6 +1133,8 @@ pub struct Event {
     #[serde(rename = "createdAt")]
     pub timestamp: Option<String>,
     pub success: Option<bool>,
+    pub source_agent: Option<String>,
+    pub session_id: Option<String>,
     // Enriched fields (populated by queries)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "projectDir")]
@@ -1081,6 +1155,8 @@ impl Event {
             summary: node.get("summary").ok(),
             timestamp: node.get::<String>("timestamp").ok(),
             success: node.get("success").ok(),
+            source_agent: node.get("source_agent").ok(),
+            session_id: None, // Populated from Session relationship
             // These are populated by the caller after from_node
             project_path: None,
             feature_id: None,
