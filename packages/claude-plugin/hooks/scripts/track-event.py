@@ -248,7 +248,8 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
     """Handle PostToolUse events - track all tool calls. Returns workflow nudges."""
     tool_name = hook_input.get("tool_name", "unknown")
     tool_input = hook_input.get("tool_input", {})
-    tool_result = hook_input.get("tool_result", {})
+    # Claude Code uses "tool_response", manual tests use "tool_result"
+    tool_result = hook_input.get("tool_response") or hook_input.get("tool_result", {})
 
     # Skip tracking the tracking script itself
     if "track-event.py" in str(tool_input) or "db_helper" in str(tool_input):
@@ -386,7 +387,8 @@ def handle_stop(hook_input: dict, project_dir: str, session_id: str):
 def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
     """Handle SubagentStop events - Task tool finished."""
     tool_input = hook_input.get("tool_input", {})
-    tool_result = hook_input.get("tool_result", {})
+    # Claude Code uses "tool_response", manual tests use "tool_result"
+    tool_result = hook_input.get("tool_response") or hook_input.get("tool_result", {})
 
     active_feature = db_helper.get_active_feature(project_dir)
     feature_id = active_feature["id"] if active_feature else None
