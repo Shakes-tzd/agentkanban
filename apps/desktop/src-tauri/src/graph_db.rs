@@ -224,7 +224,9 @@ impl GraphDb {
         let mut features = Vec::new();
         while let Some(row) = result.next().await? {
             let node: Node = row.get("f")?;
-            features.push(Feature::from_node(&node)?);
+            let mut feature = Feature::from_node(&node)?;
+            feature.project_dir = Some(project_path.to_string());
+            features.push(feature);
         }
 
         Ok(features)
@@ -420,6 +422,69 @@ impl GraphDb {
         Ok(events)
     }
 
+    /// Get recent events across all projects (global view)
+    pub async fn get_all_recent_events(&self, limit: i64) -> Result<Vec<Event>> {
+        let graph = self.get_graph().await?;
+
+        let q = query(
+            r#"
+            MATCH (e:Event)
+            OPTIONAL MATCH (e)-[:TRIGGERED_BY]->(s:Session)-[:IN_PROJECT]->(p:Project)
+            OPTIONAL MATCH (e)-[:LINKED_TO]->(f:Feature)
+            RETURN e, p.path as project_path, f.id as feature_id, f.description as feature_description
+            ORDER BY e.timestamp DESC
+            LIMIT $limit
+            "#,
+        )
+        .param("limit", limit);
+
+        let mut result = graph.execute(q).await?;
+
+        let mut events = Vec::new();
+        while let Some(row) = result.next().await? {
+            let node: Node = row.get("e")?;
+            let mut event = Event::from_node(&node)?;
+            // Enrich with project and feature info
+            event.project_path = row.get("project_path").ok();
+            event.feature_id = row.get("feature_id").ok();
+            event.feature_description = row.get("feature_description").ok();
+            events.push(event);
+        }
+
+        Ok(events)
+    }
+
+    /// Get events linked to a specific feature
+    pub async fn get_events_by_feature(&self, feature_id: &str, limit: i64) -> Result<Vec<Event>> {
+        let graph = self.get_graph().await?;
+
+        let q = query(
+            r#"
+            MATCH (e:Event)-[:LINKED_TO]->(f:Feature {id: $feature_id})
+            OPTIONAL MATCH (e)-[:TRIGGERED_BY]->(s:Session)-[:IN_PROJECT]->(p:Project)
+            RETURN e, p.path as project_path, f.description as feature_description
+            ORDER BY e.timestamp DESC
+            LIMIT $limit
+            "#,
+        )
+        .param("feature_id", feature_id)
+        .param("limit", limit);
+
+        let mut result = graph.execute(q).await?;
+
+        let mut events = Vec::new();
+        while let Some(row) = result.next().await? {
+            let node: Node = row.get("e")?;
+            let mut event = Event::from_node(&node)?;
+            event.project_path = row.get("project_path").ok();
+            event.feature_id = Some(feature_id.to_string());
+            event.feature_description = row.get("feature_description").ok();
+            events.push(event);
+        }
+
+        Ok(events)
+    }
+
     // =========================================================================
     // SESSION OPERATIONS
     // =========================================================================
@@ -499,6 +564,31 @@ impl GraphDb {
             "#,
         )
         .param("project_path", project_path);
+
+        let mut result = graph.execute(q).await?;
+
+        let mut sessions = Vec::new();
+        while let Some(row) = result.next().await? {
+            let node: Node = row.get("s")?;
+            sessions.push(Session::from_node(&node)?);
+        }
+
+        Ok(sessions)
+    }
+
+    /// Get all sessions (global view)
+    pub async fn get_all_sessions(&self, limit: i64) -> Result<Vec<Session>> {
+        let graph = self.get_graph().await?;
+
+        let q = query(
+            r#"
+            MATCH (s:Session)
+            RETURN s
+            ORDER BY s.last_activity DESC
+            LIMIT $limit
+            "#,
+        )
+        .param("limit", limit);
 
         let mut result = graph.execute(q).await?;
 
@@ -914,27 +1004,40 @@ impl Project {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Feature {
     pub id: Option<String>,
     pub description: String,
     pub category: String,
+    // Graph DB uses "status" but frontend expects "passes"/"inProgress"
+    #[serde(skip_serializing)]
     pub status: String,
+    // Computed from status for frontend compatibility
+    pub passes: bool,
+    pub in_progress: bool,
     pub priority: Option<i32>,
     pub steps: Option<Vec<String>>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub completed_at: Option<String>,
     pub work_count: Option<i32>,
+    #[serde(rename = "agent")]
     pub assigned_agent: Option<String>,
+    // Project path (populated by caller)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
 }
 
 impl Feature {
     fn from_node(node: &Node) -> Result<Self> {
+        let status: String = node.get("status")?;
         Ok(Self {
             id: node.get("id").ok(),
             description: node.get("description")?,
             category: node.get("category")?,
-            status: node.get("status")?,
+            passes: status == "complete",
+            in_progress: status == "in_progress",
+            status,
             priority: node.get::<i64>("priority").ok().map(|p| p as i32),
             steps: node.get::<Vec<String>>("steps").ok(),
             created_at: node.get::<String>("created_at").ok(),
@@ -942,19 +1045,30 @@ impl Feature {
             completed_at: node.get::<String>("completed_at").ok(),
             work_count: node.get::<i64>("work_count").ok().map(|w| w as i32),
             assigned_agent: node.get("assigned_agent").ok(),
+            project_dir: None, // Set by caller
         })
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Event {
     pub id: Option<String>,
     pub event_type: String,
     pub tool_name: Option<String>,
     pub payload: Option<serde_json::Value>,
     pub summary: Option<String>,
+    #[serde(rename = "createdAt")]
     pub timestamp: Option<String>,
     pub success: Option<bool>,
+    // Enriched fields (populated by queries)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "projectDir")]
+    pub project_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_description: Option<String>,
 }
 
 impl Event {
@@ -967,11 +1081,16 @@ impl Event {
             summary: node.get("summary").ok(),
             timestamp: node.get::<String>("timestamp").ok(),
             success: node.get("success").ok(),
+            // These are populated by the caller after from_node
+            project_path: None,
+            feature_id: None,
+            feature_description: None,
         })
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
     pub agent: String,
@@ -999,6 +1118,7 @@ impl Session {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectStats {
     pub total: i32,
     pub completed: i32,

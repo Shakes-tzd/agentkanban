@@ -154,7 +154,7 @@ async function loadData() {
     const [featuresData, eventsData, statsData, projectsData] = await Promise.all([
       invoke<Feature[]>('get_features', { projectDir: selectedProject.value }),
       invoke<AgentEvent[]>('get_events', { limit: 50 }),
-      invoke<Stats>('get_stats'),
+      invoke<Stats>('get_stats', { projectPath: selectedProject.value }),
       invoke<string[]>('get_projects'),
     ])
     features.value = featuresData
@@ -231,12 +231,12 @@ onMounted(async () => {
     await scanProjects()
   })
 
-  // Poll for new events every 2 seconds (hooks write directly to SQLite)
+  // Poll for new events every 2 seconds (hooks write directly to Memgraph)
   pollInterval = setInterval(async () => {
     try {
       const [eventsData, statsData] = await Promise.all([
         invoke<AgentEvent[]>('get_events', { limit: 50 }),
-        invoke<Stats>('get_stats'),
+        invoke<Stats>('get_stats', { projectPath: selectedProject.value }),
       ])
       // Only update if there are new events (compare by first event id)
       if (eventsData.length > 0 && (events.value.length === 0 || eventsData[0].id !== events.value[0]?.id)) {
