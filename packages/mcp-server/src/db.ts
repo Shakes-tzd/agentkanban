@@ -695,6 +695,11 @@ export interface ActivityEvent {
 
 /**
  * Record an MCP tool activity, linking it to the Session Work feature.
+ *
+ * @param projectPath - Project directory path
+ * @param toolName - Name of the MCP tool called
+ * @param args - Tool arguments (may include source_agent and session_id)
+ * @param result - Tool result with success status
  */
 export async function recordMcpActivity(
   projectPath: string,
@@ -705,7 +710,17 @@ export async function recordMcpActivity(
   // Get the Session Work feature
   const sessionWorkFeature = await getOrCreateSessionWorkFeature(projectPath);
 
+  // Extract agent identification from args, env vars, or defaults
+  const sourceAgent = (args.source_agent as string)
+    || process.env.IJOKA_AGENT_ID
+    || 'unknown';
+  const sessionId = (args.session_id as string)
+    || process.env.IJOKA_SESSION_ID
+    || process.env.CLAUDE_SESSION_ID
+    || `mcp-${Date.now()}`;
+
   const eventId = randomUUID();
+  const summary = `MCP: ${toolName}`;
   const payload = {
     tool: toolName,
     args: JSON.stringify(args).substring(0, 500),
@@ -715,6 +730,7 @@ export async function recordMcpActivity(
   };
 
   // Create the event and link it to the Session Work feature
+  // Use `timestamp` field name to match Rust/Python conventions
   await runWriteQuery(
     `
     MATCH (f:Feature {id: $featureId})
@@ -723,8 +739,11 @@ export async function recordMcpActivity(
       event_type: 'McpToolCall',
       tool_name: $toolName,
       payload: $payload,
-      created_at: datetime(),
-      source_agent: 'mcp-server'
+      timestamp: datetime(),
+      source_agent: $sourceAgent,
+      session_id: $sessionId,
+      success: $success,
+      summary: $summary
     })-[:LINKED_TO]->(f)
     `,
     {
@@ -732,6 +751,10 @@ export async function recordMcpActivity(
       featureId: sessionWorkFeature.id,
       toolName,
       payload: JSON.stringify(payload),
+      sourceAgent,
+      sessionId,
+      success: result.success,
+      summary,
     }
   );
 
@@ -745,7 +768,7 @@ export async function recordMcpActivity(
     { featureId: sessionWorkFeature.id }
   );
 
-  console.error(`[ijoka-mcp] Recorded activity: ${toolName} -> Session Work feature`);
+  console.error(`[ijoka-mcp] Recorded activity: ${toolName} (agent: ${sourceAgent}) -> Session Work feature`);
 }
 
 // =============================================================================
