@@ -2,6 +2,7 @@ defmodule IjokaWeb.Graph.EventSubscriber do
   @moduledoc """
   GenServer that polls Memgraph for new events and broadcasts them via PubSub.
   LiveView components subscribe to receive real-time updates.
+  Uses event ID tracking (not timestamps) to prevent duplicate broadcasts.
   """
   use GenServer
 
@@ -10,6 +11,7 @@ defmodule IjokaWeb.Graph.EventSubscriber do
   alias IjokaWeb.Graph.Memgraph
 
   @poll_interval 2_000  # Poll every 2 seconds
+  @max_seen_ids 500     # Keep last N event IDs to prevent memory growth
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -33,9 +35,9 @@ defmodule IjokaWeb.Graph.EventSubscriber do
 
   @impl true
   def init(_state) do
-    # Get initial last event timestamp
+    # Start with empty set of seen event IDs
     schedule_poll()
-    {:ok, %{last_event_time: nil}}
+    {:ok, %{seen_event_ids: MapSet.new()}}
   end
 
   @impl true
@@ -52,13 +54,18 @@ defmodule IjokaWeb.Graph.EventSubscriber do
   defp poll_events(state) do
     case Memgraph.get_events(20) do
       {:ok, events} when events != [] ->
-        # Check for new events since last poll
-        latest_time = hd(events)[:created_at]
+        # Filter to only events we haven't seen before (by ID, not timestamp)
+        {new_events, updated_seen} = filter_unseen_events(events, state.seen_event_ids)
 
-        if state.last_event_time != latest_time do
-          # Broadcast new events
-          new_events = filter_new_events(events, state.last_event_time)
+        # Debug: show first event structure
+        if length(events) > 0 do
+          first_event = hd(events)
+          first_id = Map.get(first_event, :id) || Map.get(first_event, "id")
+          Logger.debug("First event ID: #{inspect(first_id)}, keys: #{inspect(Map.keys(first_event))}")
+        end
+        Logger.debug("Poll: got #{length(events)} events, #{length(new_events)} new, seen_ids size: #{MapSet.size(state.seen_event_ids)}")
 
+        if length(new_events) > 0 do
           for event <- new_events do
             # Broadcast to project-specific channel
             if event[:project_dir] do
@@ -77,11 +84,11 @@ defmodule IjokaWeb.Graph.EventSubscriber do
             )
           end
 
-          Logger.debug("Broadcast #{length(new_events)} new events")
-          %{state | last_event_time: latest_time}
-        else
-          state
+          unique_ids = new_events |> Enum.map(fn e -> Map.get(e, :id) || Map.get(e, "id") end) |> Enum.uniq()
+          Logger.debug("Broadcast #{length(new_events)} new events with #{length(unique_ids)} unique IDs: #{inspect(Enum.take(unique_ids, 5))}...")
         end
+
+        %{state | seen_event_ids: updated_seen}
 
       {:ok, []} ->
         state
@@ -92,11 +99,33 @@ defmodule IjokaWeb.Graph.EventSubscriber do
     end
   end
 
-  defp filter_new_events(events, nil), do: events
-
-  defp filter_new_events(events, last_time) do
-    Enum.filter(events, fn event ->
-      event[:created_at] > last_time
+  # Filter events by ID (not timestamp) - much more reliable for deduplication
+  defp filter_unseen_events(events, seen_ids) do
+    # Filter to events we haven't seen yet
+    # Note: events have atom keys from Memgraph module (%{id: ..., ...})
+    new_events = Enum.filter(events, fn event ->
+      event_id = Map.get(event, :id) || Map.get(event, "id")
+      event_id && !MapSet.member?(seen_ids, event_id)
     end)
+
+    # Add new event IDs to seen set
+    new_ids = new_events
+      |> Enum.map(fn e -> Map.get(e, :id) || Map.get(e, "id") end)
+      |> Enum.filter(& &1)
+      |> MapSet.new()
+
+    updated_seen = MapSet.union(seen_ids, new_ids)
+
+    # Trim set if it gets too large (keep most recent by converting to list and back)
+    updated_seen = if MapSet.size(updated_seen) > @max_seen_ids do
+      updated_seen
+      |> MapSet.to_list()
+      |> Enum.take(-@max_seen_ids)
+      |> MapSet.new()
+    else
+      updated_seen
+    end
+
+    {new_events, updated_seen}
   end
 end

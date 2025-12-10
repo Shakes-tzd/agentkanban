@@ -26,15 +26,26 @@ defmodule IjokaWeb.Graph.Memgraph do
   """
   def get_events(limit \\ 50) do
     # Note: Convert ZonedDateTime to string using toString() to avoid bolt_sips encoding issues
+    # Graph structure: Event -[:TRIGGERED_BY]-> Session -[:IN_PROJECT]-> Project
+    # Use aggregation to avoid row multiplication from multiple relationships
     cypher = """
     MATCH (e:Event)
-    OPTIONAL MATCH (e)-[:BELONGS_TO_SESSION]->(s:Session)
-    OPTIONAL MATCH (e)-[:LINKED_TO_FEATURE]->(f:Feature)
-    RETURN e.id as id, e.event_type as event_type, e.source_agent as source_agent,
-           coalesce(s.session_id, e.session_id) as session_id, e.project_dir as project_dir,
-           e.tool_name as tool_name, e.payload as payload, coalesce(f.id, e.feature_id) as feature_id,
-           toString(e.created_at) as created_at
-    ORDER BY e.created_at DESC
+    OPTIONAL MATCH (e)-[:TRIGGERED_BY]->(s:Session)
+    OPTIONAL MATCH (s)-[:IN_PROJECT]->(p:Project)
+    OPTIONAL MATCH (e)-[:LINKED_TO]->(f:Feature)
+    WITH e,
+         collect(DISTINCT s.agent)[0] as session_agent,
+         collect(DISTINCT s.id)[0] as session_id,
+         collect(DISTINCT p.path)[0] as project_path,
+         collect(DISTINCT f.id)[0] as feature_id
+    RETURN DISTINCT e.id as id, e.event_type as event_type,
+           coalesce(session_agent, e.source_agent) as source_agent,
+           coalesce(session_id, e.session_id) as session_id,
+           project_path as project_dir,
+           e.tool_name as tool_name, e.payload as payload,
+           feature_id,
+           toString(coalesce(e.timestamp, e.created_at)) as created_at
+    ORDER BY created_at DESC
     LIMIT $limit
     """
 
@@ -68,7 +79,9 @@ defmodule IjokaWeb.Graph.Memgraph do
   def get_features(project_path) do
     cypher = """
     MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $project_path})
-    RETURN f
+    RETURN f.id as id, f.description as description, f.category as category,
+           f.passes as passes, f.in_progress as in_progress, f.agent as agent,
+           f.work_count as work_count, f.priority as priority
     ORDER BY f.priority DESC, f.created_at DESC
     """
 
@@ -76,17 +89,16 @@ defmodule IjokaWeb.Graph.Memgraph do
       {:ok, results} ->
         features =
           Enum.map(results, fn row ->
-            f = row["f"]
             %{
-              id: f.properties["id"],
-              description: f.properties["description"],
-              category: f.properties["category"],
-              status: determine_status(f.properties),
-              passes: f.properties["passes"] || false,
-              in_progress: f.properties["in_progress"] || false,
-              agent: f.properties["agent"],
-              work_count: f.properties["work_count"] || 0,
-              priority: f.properties["priority"] || 100
+              id: row["id"],
+              description: row["description"],
+              category: row["category"],
+              status: determine_status(row),
+              passes: row["passes"] || false,
+              in_progress: row["in_progress"] || false,
+              agent: row["agent"],
+              work_count: row["work_count"] || 0,
+              priority: row["priority"] || 100
             }
           end)
 
@@ -104,20 +116,19 @@ defmodule IjokaWeb.Graph.Memgraph do
     cypher = """
     MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $project_path})
     WHERE f.in_progress = true
-    RETURN f
+    RETURN f.id as id, f.description as description, f.category as category, f.agent as agent
     LIMIT 1
     """
 
     case query(cypher, %{project_path: project_path}) do
       {:ok, [row | _]} ->
-        f = row["f"]
         {:ok,
          %{
-           id: f.properties["id"],
-           description: f.properties["description"],
-           category: f.properties["category"],
+           id: row["id"],
+           description: row["description"],
+           category: row["category"],
            in_progress: true,
-           agent: f.properties["agent"]
+           agent: row["agent"]
          }}
 
       {:ok, []} ->
@@ -134,7 +145,9 @@ defmodule IjokaWeb.Graph.Memgraph do
   def get_sessions do
     cypher = """
     MATCH (s:Session)
-    RETURN s
+    RETURN s.session_id as session_id, s.source_agent as source_agent,
+           s.project_dir as project_dir, toString(s.started_at) as started_at,
+           toString(s.last_activity) as last_activity, s.status as status
     ORDER BY s.last_activity DESC
     """
 
@@ -142,14 +155,13 @@ defmodule IjokaWeb.Graph.Memgraph do
       {:ok, results} ->
         sessions =
           Enum.map(results, fn row ->
-            s = row["s"]
             %{
-              session_id: s.properties["session_id"],
-              source_agent: s.properties["source_agent"],
-              project_dir: s.properties["project_dir"],
-              started_at: s.properties["started_at"],
-              last_activity: s.properties["last_activity"],
-              status: s.properties["status"] || "active"
+              session_id: row["session_id"],
+              source_agent: row["source_agent"],
+              project_dir: row["project_dir"],
+              started_at: row["started_at"],
+              last_activity: row["last_activity"],
+              status: row["status"] || "active"
             }
           end)
 
@@ -170,7 +182,7 @@ defmodule IjokaWeb.Graph.Memgraph do
       count(f) as total,
       sum(CASE WHEN f.passes = true THEN 1 ELSE 0 END) as completed,
       sum(CASE WHEN f.in_progress = true THEN 1 ELSE 0 END) as in_progress,
-      sum(CASE WHEN f.passes = false AND f.in_progress = false THEN 1 ELSE 0 END) as pending
+      sum(CASE WHEN coalesce(f.passes, false) = false AND coalesce(f.in_progress, false) = false THEN 1 ELSE 0 END) as pending
     """
 
     case query(cypher, %{project_path: project_path}) do
@@ -197,7 +209,7 @@ defmodule IjokaWeb.Graph.Memgraph do
   def get_projects do
     cypher = """
     MATCH (p:Project)
-    RETURN p
+    RETURN p.path as path, p.name as name
     ORDER BY p.path
     """
 
@@ -205,10 +217,9 @@ defmodule IjokaWeb.Graph.Memgraph do
       {:ok, results} ->
         projects =
           Enum.map(results, fn row ->
-            p = row["p"]
             %{
-              path: p.properties["path"],
-              name: p.properties["name"] || Path.basename(p.properties["path"])
+              path: row["path"],
+              name: row["name"] || Path.basename(row["path"])
             }
           end)
 
