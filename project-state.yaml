@@ -1,0 +1,541 @@
+# AgentKanban Project State
+# Generated: 2024-12-08
+# Version: 0.1.0
+
+project:
+  name: AgentKanban
+  description: Unified observability and task management system for AI coding agents
+  repository: https://github.com/yourusername/agentkanban
+  license: MIT
+  pattern: Anthropic's long-running agent pattern
+  documentation: https://www.anthropic.com/engineering/claude-code-best-practices
+
+# =============================================================================
+# ARCHITECTURE
+# =============================================================================
+architecture:
+  type: Monorepo with Tauri desktop app + Claude Code plugin
+
+  apps:
+    desktop:
+      path: apps/desktop/
+      framework: Tauri 2.x
+
+      frontend:
+        framework: Vue 3
+        language: TypeScript
+        bundler: Vite 5.x
+        styling: Scoped CSS with CSS variables (dark theme)
+
+        components:
+          - name: App.vue
+            description: Main layout with VS Code-style activity bar, project tabs, and resizable panels
+            features:
+              - Activity bar (icon rail) on far left
+              - Collapsible projects panel
+              - Browser-style project tabs with close buttons
+              - View switcher (board/activity)
+              - Resizable activity sidebar with drag handle
+              - Settings modal
+
+          - name: KanbanBoard.vue
+            description: Three-column kanban layout (To Do, In Progress, Done)
+
+          - name: KanbanColumn.vue
+            description: Individual column with feature cards and count badge
+
+          - name: ActivityTimeline.vue
+            description: Real-time event feed grouped by session
+            features:
+              - Session grouping with collapse/expand
+              - Project name display on session cards
+              - Agent color indicators
+              - Stale session detection (15 min timeout)
+              - Internal/subagent session consolidation
+
+          - name: ActivityCard.vue
+            description: Individual activity event card with tool icons
+
+          - name: FeatureDetailModal.vue
+            description: Modal for viewing feature details and linked events
+
+          - name: ActivityDetailModal.vue
+            description: Modal for viewing activity/event details
+
+          - name: StatsBar.vue
+            description: Progress statistics display (currently hidden - counts in column headers)
+
+          - name: icons/ToolIcon.vue
+            description: SVG icon component with 30+ icons for tools, navigation, and status
+
+      backend:
+        language: Rust
+        path: apps/desktop/src-tauri/src/
+
+        modules:
+          main.rs:
+            description: App entry point, system tray, plugin setup, event broadcasting
+            features:
+              - Tauri app initialization
+              - System tray with menu (Show, Scan, Quit)
+              - Event channel for real-time updates
+              - Stale session cleanup (every 2 minutes)
+              - Window close minimizes to tray
+
+          db.rs:
+            description: SQLite database operations
+            features:
+              - WAL mode for concurrent access (hooks + app)
+              - CRUD for events, features, sessions, config
+              - Feature update with human/agent override logic
+              - Stale session cleanup
+
+          server.rs:
+            description: Axum HTTP server on port 4000
+            endpoints:
+              - GET /health
+              - GET /events (with ?unlinked=true, ?limit=N, ?project_dir=)
+              - POST /events (receive hook events)
+              - POST /events/feature-update
+              - GET /features (with ?project_dir=)
+              - POST /events/{id}/link
+              - POST /sessions/start
+              - POST /sessions/end
+
+          watcher.rs:
+            description: File system watcher using notify crate
+            watches:
+              - ~/.claude/projects/ (recursive)
+              - Configured project directories
+            triggers:
+              - feature_list.json changes -> sync to database
+              - Feature completion -> desktop notification
+
+          commands.rs:
+            description: Tauri IPC commands exposed to frontend
+            commands:
+              - get_features, get_feature, get_events, get_feature_events
+              - get_sessions, get_stats, get_projects, scan_projects
+              - watch_project, get_config, save_config
+              - get_plugin_status, install_plugin, get_plugin_path
+              - install_integration, update_feature
+
+          plugin_manager.rs:
+            description: Claude Code plugin installation management
+
+          workflow_service.rs:
+            description: Antigravity integration installer
+
+        dependencies:
+          tauri: "2.x"
+          rusqlite: "0.31"
+          axum: "0.7"
+          tokio: { version: "1", features: ["full"] }
+          notify: "6"
+          notify-debouncer-mini: "0.4"
+          serde: "1"
+          serde_json: "1"
+          chrono: "0.4"
+          tower-http: "0.5"
+          dirs: "5"
+          glob: "0.3"
+          uuid: "1"
+          tracing: "0.1"
+          urlencoding: "2"
+          anyhow: "1.0"
+
+  packages:
+    claude-plugin:
+      path: packages/claude-plugin/
+      type: Claude Code Plugin
+
+      hooks:
+        config_file: hooks/hooks.json
+
+        active_hooks:
+          - hook: SessionStart
+            script: hooks/scripts/session-start.py
+            purpose: Record session start, import features, provide context
+
+          - hook: SessionEnd
+            script: hooks/scripts/session-end.py
+            purpose: Record session end, update session status
+
+          - hook: PostToolUse
+            script: hooks/scripts/track-event.py
+            purpose: Track all tool calls, link to active feature
+            env: AGENTKANBAN_HOOK_TYPE=PostToolUse
+
+          - hook: PreToolUse
+            script: hooks/scripts/smart-feature-match.py
+            purpose: Feature matching before tool execution
+
+          - hook: Stop
+            script: hooks/scripts/track-event.py
+            purpose: Track agent stop events
+            env: AGENTKANBAN_HOOK_TYPE=Stop
+
+          - hook: UserPromptSubmit
+            script: hooks/scripts/track-event.py
+            purpose: Capture user queries, classify features
+            env: AGENTKANBAN_HOOK_TYPE=UserPromptSubmit
+
+        scripts:
+          session-start.py:
+            purpose: Initialize session, provide feature context to Claude
+            outputs: JSON with additionalContext (active feature, progress stats)
+
+          session-end.py:
+            purpose: Mark session as ended
+
+          track-event.py:
+            purpose: Unified event tracking (tools, stops, user prompts)
+            features:
+              - Extract file paths from tool input
+              - Summarize tool input
+              - Check completion criteria (build, test, lint, work_count)
+              - Auto-complete features
+              - Classify user prompts to features
+              - Detect diagnostic commands
+
+          db_helper.py:
+            purpose: Shared SQLite database operations for hooks
+            functions:
+              - get_db_path, get_connection
+              - insert_event, get_features, get_active_feature
+              - activate_feature, complete_feature, increment_work_count
+              - start_session, end_session, update_session_activity
+              - set_session_state, get_session_state
+              - sync_features_from_json
+
+          smart-feature-match.py:
+            purpose: AI-powered feature matching
+
+          validate-feature-edit.py:
+            purpose: Validate feature_list.json edits
+
+          auto-feature-match.py:
+            purpose: Automatic feature matching logic
+
+          manage-features.py:
+            purpose: CLI for programmatic feature management
+
+          check-feature-update.py:
+            purpose: Check for feature updates
+
+          feature-status-manager.py:
+            purpose: Manage feature status transitions
+
+      commands:
+        - name: /init-project
+          file: commands/init-project.md
+          purpose: Create feature_list.json for a new project
+
+        - name: /feature-status
+          file: commands/feature-status.md
+          purpose: Show current progress and next tasks
+
+        - name: /next-feature
+          file: commands/next-feature.md
+          purpose: Start working on next incomplete feature
+
+        - name: /add-feature
+          file: commands/add-feature.md
+          purpose: Add new feature to feature_list.json
+
+        - name: /set-feature
+          file: commands/set-feature.md
+          purpose: Set active feature manually
+
+        - name: /classify-activity
+          file: commands/classify-activity.md
+          purpose: Classify current activity to a feature
+
+        - name: /complete-feature
+          file: commands/complete-feature.md
+          purpose: Mark current feature as complete
+
+        - name: /update-plugin
+          file: commands/update-plugin.md
+          purpose: Update the AgentKanban plugin
+
+        - name: /launch-app
+          file: commands/launch-app.md
+          purpose: Launch the AgentKanban desktop app
+
+      skills:
+        - name: feature-workflow
+          file: skills/feature-workflow/SKILL.md
+          purpose: Guidance for working with feature_list.json
+
+# =============================================================================
+# DATABASE SCHEMA
+# =============================================================================
+database:
+  type: SQLite
+  mode: WAL (Write-Ahead Logging for concurrent access)
+  location: ~/.agentkanban/agentkanban.db
+  shared_between: Tauri app and Claude Code hooks
+
+  tables:
+    events:
+      description: All agent activity events
+      columns:
+        - { name: id, type: INTEGER PRIMARY KEY AUTOINCREMENT }
+        - { name: event_type, type: TEXT NOT NULL }
+        - { name: source_agent, type: TEXT NOT NULL }
+        - { name: session_id, type: TEXT NOT NULL }
+        - { name: project_dir, type: TEXT NOT NULL }
+        - { name: tool_name, type: TEXT }
+        - { name: payload, type: TEXT }
+        - { name: feature_id, type: TEXT }
+        - { name: created_at, type: TEXT, default: "datetime('now')" }
+      indexes:
+        - idx_events_session (session_id)
+        - idx_events_project (project_dir)
+        - idx_events_created (created_at DESC)
+        - idx_events_feature_id (feature_id)
+
+    features:
+      description: Project features/tasks
+      columns:
+        # Core fields
+        - { name: id, type: TEXT PRIMARY KEY }
+        - { name: project_dir, type: TEXT NOT NULL }
+        - { name: description, type: TEXT NOT NULL }
+        - { name: category, type: TEXT, default: "'functional'" }
+        - { name: passes, type: INTEGER, default: 0 }
+        - { name: in_progress, type: INTEGER, default: 0 }
+        - { name: agent, type: TEXT }
+        - { name: steps, type: TEXT }
+        - { name: work_count, type: INTEGER, default: 0 }
+        - { name: completion_criteria, type: TEXT }
+        - { name: updated_at, type: TEXT, default: "datetime('now')" }
+        # Agent-managed state
+        - { name: confidence, type: INTEGER, nullable: true }
+        - { name: model, type: TEXT, nullable: true }
+        - { name: is_streaming, type: INTEGER, default: 0 }
+        - { name: retry_count, type: INTEGER, default: 0 }
+        - { name: token_cost, type: INTEGER, nullable: true }
+        - { name: has_error, type: INTEGER, default: 0 }
+        - { name: last_agent_update, type: TEXT, nullable: true }
+        # Human override state
+        - { name: manual_priority, type: TEXT, nullable: true }
+        - { name: human_override_until, type: TEXT, nullable: true }
+      indexes:
+        - idx_features_project (project_dir)
+
+    sessions:
+      description: Active agent sessions
+      columns:
+        - { name: session_id, type: TEXT PRIMARY KEY }
+        - { name: source_agent, type: TEXT NOT NULL }
+        - { name: project_dir, type: TEXT NOT NULL }
+        - { name: started_at, type: TEXT, default: "datetime('now')" }
+        - { name: last_activity, type: TEXT, default: "datetime('now')" }
+        - { name: status, type: TEXT, default: "'active'" }
+
+    config:
+      description: Application configuration
+      columns:
+        - { name: key, type: TEXT PRIMARY KEY }
+        - { name: value, type: TEXT NOT NULL }
+      stored_config:
+        watched_projects: list of project directories
+        sync_server_port: 4000
+        notifications_enabled: true
+        selected_project: current project path
+
+# =============================================================================
+# FEATURE LIST PATTERN
+# =============================================================================
+feature_list:
+  file: feature_list.json
+  format: JSON array
+
+  schema:
+    required:
+      - category: string (functional, ui, security, performance, documentation, testing, infrastructure, refactoring)
+      - description: string
+      - passes: boolean
+
+    optional:
+      - steps: string[] (verification steps)
+      - inProgress: boolean
+      - agent: string
+      - workCount: integer
+      - completionCriteria:
+          type: string (manual, build, test, lint, work_count, any_success)
+          count: integer (for work_count type)
+          command_pattern: string (regex for build/test commands)
+          description: string
+      - model: string
+      - manualPriority: string (high, normal)
+
+  completion_criteria_types:
+    manual: Requires explicit /complete-feature command
+    build: Auto-complete when build command succeeds
+    test: Auto-complete when test command succeeds
+    lint: Auto-complete when lint command succeeds
+    work_count: Auto-complete after N successful tool calls
+    any_success: Auto-complete on any successful Edit/Write/Bash
+
+# =============================================================================
+# CURRENT FEATURES STATUS
+# =============================================================================
+features_status:
+  total: 19
+  completed: 9
+  in_progress: 1
+  percentage: 47%
+
+  completed_features:
+    - SQLite database initializes correctly on app start
+    - HTTP server accepts and stores events from hooks
+    - File watcher detects feature_list.json changes
+    - Kanban board displays features in correct columns
+    - Activity timeline shows real-time events
+    - Stats bar shows accurate progress metrics
+    - System tray menu works correctly
+    - README includes complete setup instructions
+    - Enhance session-end.sh functionality
+    - Tool calls are linked to active feature in Activity History
+
+  in_progress_features:
+    - Claude plugin installs and hooks work
+
+  incomplete_features:
+    - Verify Tauri app builds and runs successfully
+    - Desktop notifications work for feature completion
+    - Scan Projects discovers feature_list.json files
+    - Different projects have their own separate kanban boards
+    - Enhanced tool call and feature details display
+    - Fix empty events and improve activity card display
+    - Support unlinked activities and session-based observability
+    - Research Claude OTEL metrics
+
+# =============================================================================
+# UI/UX STATE
+# =============================================================================
+ui:
+  layout: VS Code-inspired
+  theme: Dark
+
+  structure:
+    - section: Activity Bar
+      position: Far left (40px width)
+      content: Icon-only navigation (folder, board, activity, settings)
+
+    - section: Projects Panel
+      position: Left of main content
+      width: 200px (collapsible)
+      content: Project list, project tabs
+
+    - section: Main Content
+      position: Center
+      views:
+        - Kanban Board (default)
+        - Activity View (per-project)
+
+    - section: Activity Sidebar
+      position: Right
+      width: 320px (resizable, min 200px, max 600px)
+      content: Global activity timeline with session grouping
+
+  components:
+    tabs:
+      style: Browser-style with close buttons
+      behavior: Only show intentionally opened projects
+
+    session_cards:
+      display: Agent name, project name, session ID, event count, duration
+      grouping: By session with collapse/expand
+
+    resize_handle:
+      width: 6px
+      visual: Vertical grip lines on hover
+
+# =============================================================================
+# DEVELOPMENT
+# =============================================================================
+development:
+  commands:
+    install: pnpm install
+    dev: pnpm dev
+    build: pnpm build
+    typecheck: pnpm typecheck
+    install_plugin: cd packages/claude-plugin && claude /plugin install .
+
+  ports:
+    http_server: 4000
+
+  paths:
+    database: ~/.agentkanban/agentkanban.db
+    claude_projects: ~/.claude/projects/
+
+  logging:
+    backend: tracing (Rust)
+    hooks: ~/.agentkanban/hook_debug.log
+
+# =============================================================================
+# EVENT TYPES
+# =============================================================================
+event_types:
+  session:
+    - SessionStart: Agent session begins
+    - SessionEnd: Agent session ends
+
+  agent:
+    - AgentStop: Agent finished execution
+    - SubagentStop: Task tool subagent finished
+
+  tools:
+    - ToolCall: Any tool invocation (with success/error status)
+    - ToolResult: Tool execution result
+
+  user:
+    - UserQuery: User prompt submitted
+    - UserMessage: User text message
+
+  features:
+    - FeatureCompleted: Feature marked as complete
+
+  other:
+    - TranscriptUpdated: (deprecated) Transcript file changed
+    - Image: Image uploaded
+
+# =============================================================================
+# SUPPORTED AGENTS
+# =============================================================================
+agents:
+  implemented:
+    - claude-code: Full integration via hooks
+
+  planned:
+    - codex-cli: Codex CLI adapter
+    - gemini-cli: Gemini CLI adapter
+
+  agent_colors:
+    claude-code: "#60a5fa"
+    codex-cli: "#4ade80"
+    gemini-cli: "#fbbf24"
+    hook: "#a78bfa"
+    file-watch: "#64748b"
+    subagents: "#94a3b8"
+    unknown: "#888888"
+
+# =============================================================================
+# KNOWN ISSUES / TODO
+# =============================================================================
+known_issues:
+  - Tauri app build verification pending
+  - Desktop notifications may not appear on all platforms
+  - Project scanning needs broader directory support
+
+future_enhancements:
+  - Multi-agent coordination
+  - Token cost tracking
+  - Confidence indicators
+  - Error state visualization
+  - Streaming indicator
+  - Retry count display

@@ -1,11 +1,11 @@
-# Launch AgentKanban App
+# Launch Ijoka App
 
-Start the AgentKanban Tauri desktop application in development mode.
+Start the Ijoka Tauri desktop application in development mode.
 
 Run the following command:
 
 ```bash
-cd /Users/shakes/DevProjects/agentkanban && pnpm dev
+cd /Users/shakes/DevProjects/ijoka && pnpm dev
 ```
 
 Run this command in the background so you can continue working while the app runs.

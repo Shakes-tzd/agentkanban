@@ -1,10 +1,10 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.9"
-# dependencies = []
+# dependencies = ["neo4j>=5.0"]
 # ///
 """
-AgentKanban Session End Hook (SQLite Version)
+Ijoka Session End Hook (SQLite Version)
 
 Records session end in database.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 # Import shared database helper
 sys.path.insert(0, str(Path(__file__).parent))
-import db_helper
+import graph_db_helper as db_helper
 
 
 def main():

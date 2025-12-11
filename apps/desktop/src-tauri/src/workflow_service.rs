@@ -32,7 +32,7 @@ impl WorkflowService {
     }
 
     fn get_bridge_script_content() -> &'static str {
-        r#"const { AgentKanbanClient } = require('@agentkanban/client');
+        r#"const { IjokaClient } = require('@ijoka/client');
 const fs = require('fs');
 const path = require('path');
 
@@ -43,7 +43,7 @@ async function main() {
     const args = process.argv.slice(2);
     const command = args[0];
     // Default to localhost:4000
-    const client = new AgentKanbanClient('http://127.0.0.1:4000');
+    const client = new IjokaClient('http://127.0.0.1:4000');
     const projectDir = process.cwd();
 
     switch (command) {
@@ -60,15 +60,15 @@ async function main() {
             break;
 
         case 'list':
-            console.log('Fetching features from AgentKanban...');
+            console.log('Fetching features from Ijoka...');
             try {
                 const features = await client.getFeatures(projectDir);
-                
+
                 console.log('\n--- Active Features ---');
                 // Active = not passed
                 // We could also filter by "in progress" vs "todo"
                 const active = features.filter(f => !f.passes);
-                
+
                 if (active.length === 0) {
                     console.log('No active features found.');
                 } else {
@@ -100,7 +100,7 @@ async function main() {
             break;
 
         default:
-            console.log('Usage: node kanban-bridge.js [start|list|end]');
+            console.log('Usage: node ijoka-bridge.js [start|list|end]');
     }
 }
 
@@ -110,40 +110,40 @@ main().catch(console.error);
 
     fn get_workflow_content() -> &'static str {
         r#"---
-description: Start a tracked work session in AgentKanban
+description: Start a tracked work session in Ijoka
 ---
 
-This workflow helps you synchronize your work with the AgentKanban dashboard.
+This workflow helps you synchronize your work with the Ijoka dashboard.
 
 1. **Setup (First Time Only)**
    Ensure dependencies are installed.
    ```bash
-   npm install @agentkanban/client
+   npm install @ijoka/client
    ```
 
 2. **Check Active Features**
    View the current feature list to decide what to work on.
    ```bash
    // turbo
-   node scripts/kanban-bridge.js list
+   node scripts/ijoka-bridge.js list
    ```
 
 3. **Start Session**
-   Register a new session with the AgentKanban server.
+   Register a new session with the Ijoka server.
    ```bash
    // turbo
-   node scripts/kanban-bridge.js start
+   node scripts/ijoka-bridge.js start
    ```
 
 4. **Perform Work**
    - Implement the selected feature.
-   - When finished, ask the user to mark the feature as passed in AgentKanban.
+   - When finished, ask the user to mark the feature as passed in Ijoka.
 
 5. **End Session**
    When finished, close the session.
    ```bash
    // turbo
-   node scripts/kanban-bridge.js end
+   node scripts/ijoka-bridge.js end
    ```
 "#
     }

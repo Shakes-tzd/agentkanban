@@ -1,6 +1,6 @@
 //! Plugin Manager for Claude Code Integration
 //!
-//! Manages the AgentKanban plugin installation using the official Claude CLI.
+//! Manages the Ijoka plugin installation using the official Claude CLI.
 //! This is the production-ready approach that properly integrates with Claude Code.
 
 use serde_json::Value;
@@ -51,14 +51,14 @@ impl PluginManager {
             // Production: plugin bundled in app data directory
             dirs::data_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("agentkanban")
+                .join("ijoka")
                 .join("claude-plugin")
         }
     }
 
     /// Ensure the plugin is properly installed and enabled using the Claude CLI
     pub fn ensure_plugin_installed(&self) -> Result<PluginStatus, String> {
-        tracing::info!("Ensuring AgentKanban plugin is installed...");
+        tracing::info!("Ensuring Ijoka plugin is installed...");
         tracing::info!("Plugin source path: {:?}", self.plugin_source_path);
 
         // Verify plugin source exists
@@ -150,7 +150,7 @@ impl PluginManager {
             serde_json::json!({})
         };
 
-        marketplaces["AgentKanban"] = serde_json::json!({
+        marketplaces["Ijoka"] = serde_json::json!({
             "source": {
                 "source": "directory",
                 "path": plugin_path_str
@@ -173,7 +173,7 @@ impl PluginManager {
 
         let version = self.get_plugin_version().unwrap_or_else(|| "0.1.0".to_string());
 
-        plugins["plugins"]["agentkanban@AgentKanban"] = serde_json::json!({
+        plugins["plugins"]["ijoka@Ijoka"] = serde_json::json!({
             "version": version,
             "installedAt": now,
             "lastUpdated": now,
@@ -210,10 +210,14 @@ impl PluginManager {
         }
 
         // Enable our plugin
-        settings["enabledPlugins"]["agentkanban@AgentKanban"] = serde_json::json!(true);
+        settings["enabledPlugins"]["ijoka@Ijoka"] = serde_json::json!(true);
 
-        // Disable any old plugin identifiers
-        let old_identifiers = ["agentkanban@agentkanban", "agentkanban@agentkanban-local"];
+        // Disable any old plugin identifiers (legacy AgentKanban names)
+        let old_identifiers = [
+            "agentkanban@AgentKanban",
+            "agentkanban@agentkanban",
+            "agentkanban@agentkanban-local",
+        ];
         for old_id in old_identifiers {
             if settings["enabledPlugins"].get(old_id).is_some() {
                 settings["enabledPlugins"][old_id] = serde_json::json!(false);
@@ -258,8 +262,9 @@ impl PluginManager {
             Err(_) => return PluginStatus::NotInstalled,
         };
 
-        // Check for any known plugin identifier
+        // Check for any known plugin identifier (includes legacy AgentKanban names)
         let plugin_identifiers = [
+            "ijoka@Ijoka",
             "agentkanban@AgentKanban",
             "agentkanban@agentkanban-local",
             "agentkanban@agentkanban",

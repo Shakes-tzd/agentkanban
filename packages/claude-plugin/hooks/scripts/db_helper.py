@@ -1,5 +1,5 @@
 """
-AgentKanban SQLite Database Helper
+Ijoka SQLite Database Helper
 
 Shared module for all hooks to access the SQLite database directly.
 Uses WAL mode for concurrent access from multiple processes.
@@ -14,8 +14,8 @@ from typing import Any, Optional
 
 
 def get_db_path() -> Path:
-    """Get the shared database path: ~/.agentkanban/agentkanban.db"""
-    return Path.home() / ".agentkanban" / "agentkanban.db"
+    """Get the shared database path: ~/.ijoka/ijoka.db"""
+    return Path.home() / ".ijoka" / "ijoka.db"
 
 
 def get_connection() -> sqlite3.Connection:

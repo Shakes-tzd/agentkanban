@@ -1,48 +1,112 @@
-use crate::db::{Config, DbState, Feature, AgentEvent, Session, Stats};
+use crate::db::{Config, DbState, Feature, FeatureUpdate, GraphFeatureSync, UpdateSource};
+use crate::graph_db;
 use crate::plugin_manager::PluginManager;
+use crate::GraphDbState;
+use serde::Serialize;
 use tauri::State;
+
+// =============================================================================
+// FEATURE COMMANDS (still using SQLite for backwards compatibility)
+// =============================================================================
 
 #[tauri::command]
 pub async fn get_features(
-    db: State<'_, DbState>,
+    graph_db: State<'_, GraphDbState>,
     project_dir: Option<String>,
-) -> Result<Vec<Feature>, String> {
-    db.0.get_features(project_dir.as_deref())
-        .map_err(|e| e.to_string())
+) -> Result<Vec<graph_db::Feature>, String> {
+    match project_dir {
+        Some(dir) => graph_db
+            .0
+            .get_features_for_project(&dir)
+            .await
+            .map_err(|e| e.to_string()),
+        None => Ok(vec![]), // No global feature list without project
+    }
 }
+
+// =============================================================================
+// EVENT COMMANDS (using Memgraph - single source of truth)
+// =============================================================================
 
 #[tauri::command]
 pub async fn get_events(
-    db: State<'_, DbState>,
+    graph_db: State<'_, GraphDbState>,
     limit: Option<i64>,
-) -> Result<Vec<AgentEvent>, String> {
-    db.0.get_events(limit.unwrap_or(50))
+) -> Result<Vec<graph_db::Event>, String> {
+    graph_db
+        .0
+        .get_all_recent_events(limit.unwrap_or(50))
+        .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn get_feature_events(
-    db: State<'_, DbState>,
+    graph_db: State<'_, GraphDbState>,
     feature_id: String,
     limit: Option<i64>,
-) -> Result<Vec<AgentEvent>, String> {
-    db.0.get_events_by_feature(&feature_id, limit.unwrap_or(100))
+) -> Result<Vec<graph_db::Event>, String> {
+    graph_db
+        .0
+        .get_events_by_feature(&feature_id, limit.unwrap_or(100))
+        .await
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn get_sessions(db: State<'_, DbState>) -> Result<Vec<Session>, String> {
-    db.0.get_sessions().map_err(|e| e.to_string())
-}
+// =============================================================================
+// SESSION COMMANDS (using Memgraph)
+// =============================================================================
 
 #[tauri::command]
-pub async fn get_stats(db: State<'_, DbState>) -> Result<Stats, String> {
-    db.0.get_stats().map_err(|e| e.to_string())
+pub async fn get_sessions(
+    graph_db: State<'_, GraphDbState>,
+) -> Result<Vec<graph_db::Session>, String> {
+    graph_db
+        .0
+        .get_all_sessions(100)
+        .await
+        .map_err(|e| e.to_string())
 }
 
+// =============================================================================
+// STATS COMMANDS (using Memgraph)
+// =============================================================================
+
 #[tauri::command]
-pub async fn get_projects(db: State<'_, DbState>) -> Result<Vec<String>, String> {
-    db.0.get_projects().map_err(|e| e.to_string())
+pub async fn get_stats(
+    graph_db: State<'_, GraphDbState>,
+    project_path: Option<String>,
+) -> Result<graph_db::ProjectStats, String> {
+    match project_path {
+        Some(path) => graph_db
+            .0
+            .get_project_stats(&path)
+            .await
+            .map_err(|e| e.to_string()),
+        None => Ok(graph_db::ProjectStats {
+            total: 0,
+            completed: 0,
+            in_progress: 0,
+            percentage: 0,
+            active_sessions: 0,
+        }),
+    }
+}
+
+// =============================================================================
+// PROJECT COMMANDS (using Memgraph)
+// =============================================================================
+
+#[tauri::command]
+pub async fn get_projects(
+    graph_db: State<'_, GraphDbState>,
+) -> Result<Vec<String>, String> {
+    let projects = graph_db
+        .0
+        .get_projects()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(projects.into_iter().map(|p| p.path).collect())
 }
 
 #[tauri::command]
@@ -159,4 +223,164 @@ pub async fn install_integration(project_dir: String) -> Result<String, String> 
     crate::workflow_service::WorkflowService::install_antigravity_integration(&project_dir)
         .map_err(|e| e.to_string())?;
     Ok("Integration installed successfully".to_string())
+}
+
+/// Update a feature with source-aware override logic
+/// source: "human" for UI interactions, "agent" for programmatic updates
+#[tauri::command]
+pub async fn update_feature(
+    db: State<'_, DbState>,
+    feature_id: String,
+    update: FeatureUpdate,
+    source: String,
+) -> Result<bool, String> {
+    let update_source = match source.as_str() {
+        "human" => UpdateSource::Human,
+        "agent" => UpdateSource::Agent,
+        _ => return Err("Invalid source: must be 'human' or 'agent'".to_string()),
+    };
+
+    db.0.update_feature(&feature_id, update, update_source)
+        .map_err(|e| e.to_string())
+}
+
+/// Get a single feature by ID
+#[tauri::command]
+pub async fn get_feature(
+    db: State<'_, DbState>,
+    feature_id: String,
+) -> Result<Option<Feature>, String> {
+    db.0.get_feature(&feature_id)
+        .map_err(|e| e.to_string())
+}
+
+// =============================================================================
+// GRAPH DATABASE COMMANDS
+// =============================================================================
+
+#[derive(Serialize)]
+pub struct GraphDbStatus {
+    pub connected: bool,
+    pub uri: String,
+}
+
+/// Check if graph database is connected
+#[tauri::command]
+pub async fn get_graph_db_status(
+    graph_db: State<'_, GraphDbState>,
+) -> Result<GraphDbStatus, String> {
+    let connected = graph_db.0.is_connected().await;
+    Ok(GraphDbStatus {
+        connected,
+        uri: std::env::var("IJOKA_GRAPH_URI")
+            .unwrap_or_else(|_| "bolt://localhost:7687".to_string()),
+    })
+}
+
+/// Get projects from graph database
+#[tauri::command]
+pub async fn get_graph_projects(
+    graph_db: State<'_, GraphDbState>,
+) -> Result<Vec<graph_db::Project>, String> {
+    graph_db
+        .0
+        .get_projects()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get features for a project from graph database
+#[tauri::command]
+pub async fn get_graph_features(
+    graph_db: State<'_, GraphDbState>,
+    project_path: String,
+) -> Result<Vec<graph_db::Feature>, String> {
+    graph_db
+        .0
+        .get_features_for_project(&project_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get active feature for a project from graph database
+#[tauri::command]
+pub async fn get_graph_active_feature(
+    graph_db: State<'_, GraphDbState>,
+    project_path: String,
+) -> Result<Option<graph_db::Feature>, String> {
+    graph_db
+        .0
+        .get_active_feature(&project_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Get project statistics from graph database
+#[tauri::command]
+pub async fn get_graph_project_stats(
+    graph_db: State<'_, GraphDbState>,
+    project_path: String,
+) -> Result<graph_db::ProjectStats, String> {
+    graph_db
+        .0
+        .get_project_stats(&project_path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Sync projects from graph to SQLite cache
+#[tauri::command]
+pub async fn sync_graph_to_cache(
+    graph_db: State<'_, GraphDbState>,
+    db: State<'_, DbState>,
+) -> Result<String, String> {
+    if !graph_db.0.is_connected().await {
+        return Err("Graph database not connected".to_string());
+    }
+
+    // Get all projects from graph
+    let projects = graph_db
+        .0
+        .get_projects()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut synced_features = 0;
+
+    for project in &projects {
+        // Get features for each project
+        let features = graph_db
+            .0
+            .get_features_for_project(&project.path)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // Sync each feature to SQLite cache
+        for feature in features {
+            // Convert graph_db::Feature to GraphFeatureSync for SQLite upsert
+            if let Some(id) = &feature.id {
+                let sync_feature = GraphFeatureSync {
+                    id: id.clone(),
+                    project_dir: project.path.clone(),
+                    description: feature.description.clone(),
+                    category: feature.category.clone(),
+                    status: feature.status.clone(),
+                    steps: feature.steps.clone().unwrap_or_default(),
+                };
+
+                // Attempt to insert/update the feature
+                if let Err(e) = db.0.sync_feature_from_graph(&sync_feature) {
+                    tracing::warn!("Failed to sync feature {}: {}", id, e);
+                } else {
+                    synced_features += 1;
+                }
+            }
+        }
+    }
+
+    Ok(format!(
+        "Synced {} features from {} projects",
+        synced_features,
+        projects.len()
+    ))
 }

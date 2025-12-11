@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { AgentEvent, SessionStart, FeatureUpdateEvent, SessionEnd, Feature } from './types';
 
-export class AgentKanbanClient {
+export class IjokaClient {
     private client: AxiosInstance;
     private baseUrl: string;
 
@@ -17,7 +17,7 @@ export class AgentKanbanClient {
     }
 
     /**
-     * Check if the AgentKanban server is running
+     * Check if the Ijoka server is running
      */
     async health(): Promise<boolean> {
         try {
@@ -34,7 +34,7 @@ export class AgentKanbanClient {
     async startSession(event: SessionStart): Promise<boolean> {
         const success = await this.postSafe('/sessions/start', event);
         if (success) {
-            console.log(`[AgentKanban] Session started: ${event.sessionId}`);
+            console.log(`[Ijoka] Session started: ${event.sessionId}`);
         }
         return success;
     }
@@ -48,7 +48,7 @@ export class AgentKanbanClient {
             const response = await this.client.get('/features', { params });
             return response.data;
         } catch (e) {
-            console.error('[AgentKanban] Failed to fetch features');
+            console.error('[Ijoka] Failed to fetch features');
             return [];
         }
     }
@@ -66,7 +66,7 @@ export class AgentKanbanClient {
     async endSession(event: SessionEnd): Promise<boolean> {
         const success = await this.postSafe('/sessions/end', event);
         if (success) {
-            console.log(`[AgentKanban] Session ended: ${event.sessionId}`);
+            console.log(`[Ijoka] Session ended: ${event.sessionId}`);
         }
         return success;
     }
@@ -85,7 +85,7 @@ export class AgentKanbanClient {
         } catch (error) {
             // Fail silently but log to debug if needed, we don't want to crash the agent
             // if the dashboard is not running
-            // console.debug(`[AgentKanban] Failed to send to ${path}:`, error);
+            // console.debug(`[Ijoka] Failed to send to ${path}:`, error);
             return false;
         }
     }

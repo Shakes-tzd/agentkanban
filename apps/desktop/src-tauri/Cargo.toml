@@ -1,11 +1,11 @@
 [package]
-name = "agentkanban"
+name = "ijoka"
 version = "0.1.0"
-description = "Unified observability and task management for AI coding agents"
+description = "Unified observability and orchestration for AI coding agents - yoking agents together"
 authors = ["Shakes"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/yourusername/agentkanban"
+repository = "https://github.com/Shakes-tzd/ijoka"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -17,8 +17,12 @@ tauri-plugin-shell = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-fs = "2"
 
-# SQLite
+# SQLite (local cache)
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Graph Database (Memgraph/Neo4j via Bolt protocol)
+neo4rs = "0.8"
+deadpool = "0.12"
 
 # File watching
 notify = "6"

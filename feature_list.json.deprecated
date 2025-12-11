@@ -5,7 +5,7 @@
     "steps": [
       "Run pnpm install to install dependencies",
       "Run pnpm dev to start development server",
-      "Verify window opens with AgentKanban title",
+      "Verify window opens with Ijoka title",
       "Verify system tray icon appears"
     ],
     "passes": false,

@@ -1,21 +1,21 @@
-# Update AgentKanban Plugin
+# Update Ijoka Plugin
 
-Run the following commands sequentially to update the AgentKanban plugin to the latest version:
+Run the following commands sequentially to update the Ijoka plugin to the latest version:
 
 ```bash
-claude plugin marketplace update agentkanban
+claude plugin marketplace update ijoka
 ```
 
 Wait for the marketplace update to complete, then:
 
 ```bash
-claude plugin uninstall agentkanban@agentkanban
+claude plugin uninstall ijoka@ijoka
 ```
 
 Wait for uninstall to complete, then:
 
 ```bash
-claude plugin install agentkanban@agentkanban
+claude plugin install ijoka@ijoka
 ```
 
 **Important:** After running these commands, you may need to restart Claude Code for changes to take full effect.

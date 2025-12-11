@@ -348,6 +348,17 @@ fn sync_features_from_file(db: &tauri::State<DbState>, project_dir: &str, app: &
                 completion_criteria: f["completionCriteria"].as_object()
                     .map(|_| serde_json::to_string(&f["completionCriteria"]).unwrap_or_default()),
                 updated_at: chrono::Utc::now().to_rfc3339(),
+                // Agent-managed state (defaults)
+                confidence: None,
+                model: f["model"].as_str().map(String::from),
+                is_streaming: false,
+                retry_count: 0,
+                token_cost: None,
+                has_error: false,
+                last_agent_update: None,
+                // Human override state (defaults)
+                manual_priority: f["manualPriority"].as_str().map(String::from),
+                human_override_until: None,
             }
         })
         .collect();

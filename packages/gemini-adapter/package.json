@@ -1,15 +1,15 @@
 {
-    "name": "@agentkanban/gemini-adapter",
+    "name": "@ijoka/gemini-adapter",
     "version": "0.1.0",
     "bin": {
-        "agent-gemini": "./dist/cli.js"
+        "ijoka-gemini": "./dist/cli.js"
     },
     "scripts": {
         "build": "tsc",
         "start": "node dist/cli.js"
     },
     "dependencies": {
-        "@agentkanban/client": "workspace:*",
+        "@ijoka/client": "workspace:*",
         "commander": "^11.0.0",
         "uuid": "^9.0.0"
     },

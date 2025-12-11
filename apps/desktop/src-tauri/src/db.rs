@@ -9,13 +9,47 @@ pub struct Database {
 
 pub struct DbState(pub Arc<Database>);
 
-/// Get the standard database path: ~/.agentkanban/agentkanban.db
+/// Get the standard database path: ~/.ijoka/ijoka.db
 /// This is shared between Tauri app and Claude Code hooks
 pub fn get_standard_db_path() -> PathBuf {
     dirs::home_dir()
         .expect("Could not find home directory")
-        .join(".agentkanban")
-        .join("agentkanban.db")
+        .join(".ijoka")
+        .join("ijoka.db")
+}
+
+/// Migrate database from legacy AgentKanban location if needed
+pub fn migrate_from_legacy() -> Result<(), Box<dyn std::error::Error>> {
+    let home = dirs::home_dir().ok_or("No home directory")?;
+    let legacy_dir = home.join(".agentkanban");
+    let legacy_db = legacy_dir.join("agentkanban.db");
+    let new_dir = home.join(".ijoka");
+    let new_db = new_dir.join("ijoka.db");
+
+    // Only migrate if legacy exists and new doesn't
+    if legacy_db.exists() && !new_db.exists() {
+        tracing::info!("Migrating database from AgentKanban to Ijoka...");
+
+        // Create new directory
+        std::fs::create_dir_all(&new_dir)?;
+
+        // Copy database file
+        std::fs::copy(&legacy_db, &new_db)?;
+
+        // Copy WAL and SHM files if they exist
+        let legacy_wal = legacy_dir.join("agentkanban.db-wal");
+        let legacy_shm = legacy_dir.join("agentkanban.db-shm");
+        if legacy_wal.exists() {
+            std::fs::copy(&legacy_wal, new_dir.join("ijoka.db-wal"))?;
+        }
+        if legacy_shm.exists() {
+            std::fs::copy(&legacy_shm, new_dir.join("ijoka.db-shm"))?;
+        }
+
+        tracing::info!("Migration complete. Legacy data preserved at {:?}", legacy_dir);
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +80,17 @@ pub struct Feature {
     pub work_count: i32,
     pub completion_criteria: Option<String>,
     pub updated_at: String,
+    // Agent-managed state
+    pub confidence: Option<i32>,         // 0-100, agent's estimate of completion
+    pub model: Option<String>,           // Which model is working on it (e.g., "claude-3.5-sonnet")
+    pub is_streaming: bool,              // Currently generating output
+    pub retry_count: i32,                // Loop detection - increments on repeated failures
+    pub token_cost: Option<i64>,         // Running token cost
+    pub has_error: bool,                 // Error state for visual indicator
+    pub last_agent_update: Option<String>, // Timestamp of last agent update
+    // Human override state
+    pub manual_priority: Option<String>, // "high" | "normal" - human override for priority
+    pub human_override_until: Option<String>, // Timestamp to lock human state
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +213,19 @@ impl Database {
         // Migration: Add work_count and completion_criteria columns for auto-completion
         let _ = conn.execute("ALTER TABLE features ADD COLUMN work_count INTEGER DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE features ADD COLUMN completion_criteria TEXT", []);
+
+        // Migration: Add agent-managed state columns
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN confidence INTEGER", []);
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN model TEXT", []);
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN is_streaming INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN retry_count INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN token_cost INTEGER", []);
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN has_error INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN last_agent_update TEXT", []);
+
+        // Migration: Add human override state columns
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN manual_priority TEXT", []);
+        let _ = conn.execute("ALTER TABLE features ADD COLUMN human_override_until TEXT", []);
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -310,8 +368,14 @@ impl Database {
                 .map(|s| serde_json::to_string(s).unwrap_or_default());
 
             conn.execute(
-                "INSERT OR REPLACE INTO features (id, project_dir, description, category, passes, in_progress, agent, steps, work_count, completion_criteria, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))",
+                "INSERT OR REPLACE INTO features (
+                    id, project_dir, description, category, passes, in_progress, agent, steps,
+                    work_count, completion_criteria, updated_at,
+                    confidence, model, is_streaming, retry_count, token_cost, has_error, last_agent_update,
+                    manual_priority, human_override_until
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'),
+                         ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
                 params![
                     feature.id,
                     project_dir,
@@ -323,6 +387,15 @@ impl Database {
                     steps_json,
                     feature.work_count,
                     feature.completion_criteria,
+                    feature.confidence,
+                    feature.model,
+                    feature.is_streaming,
+                    feature.retry_count,
+                    feature.token_cost,
+                    feature.has_error,
+                    feature.last_agent_update,
+                    feature.manual_priority,
+                    feature.human_override_until,
                 ],
             )?;
         }
@@ -337,55 +410,48 @@ impl Database {
             steps_json.and_then(|s| serde_json::from_str(&s).ok())
         }
 
+        fn map_feature_row(row: &rusqlite::Row) -> rusqlite::Result<Feature> {
+            Ok(Feature {
+                id: row.get(0)?,
+                project_dir: row.get(1)?,
+                description: row.get(2)?,
+                category: row.get(3)?,
+                passes: row.get(4)?,
+                in_progress: row.get(5)?,
+                agent: row.get(6)?,
+                steps: parse_steps(row.get(7)?),
+                work_count: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
+                completion_criteria: row.get(9)?,
+                updated_at: row.get(10)?,
+                confidence: row.get(11)?,
+                model: row.get(12)?,
+                is_streaming: row.get::<_, Option<bool>>(13)?.unwrap_or(false),
+                retry_count: row.get::<_, Option<i32>>(14)?.unwrap_or(0),
+                token_cost: row.get(15)?,
+                has_error: row.get::<_, Option<bool>>(16)?.unwrap_or(false),
+                last_agent_update: row.get(17)?,
+                manual_priority: row.get(18)?,
+                human_override_until: row.get(19)?,
+            })
+        }
+
+        let select_cols = "SELECT id, project_dir, description, category, passes, in_progress, agent, steps,
+                          work_count, completion_criteria, updated_at,
+                          confidence, model, is_streaming, retry_count, token_cost, has_error, last_agent_update,
+                          manual_priority, human_override_until
+                          FROM features";
+
         if let Some(dir) = project_dir {
-            let mut stmt = conn.prepare(
-                "SELECT id, project_dir, description, category, passes, in_progress, agent, steps, work_count, completion_criteria, updated_at
-                 FROM features WHERE project_dir = ?1 ORDER BY id",
-            )?;
-
+            let mut stmt = conn.prepare(&format!("{} WHERE project_dir = ?1 ORDER BY id", select_cols))?;
             let features = stmt
-                .query_map([dir], |row| {
-                    Ok(Feature {
-                        id: row.get(0)?,
-                        project_dir: row.get(1)?,
-                        description: row.get(2)?,
-                        category: row.get(3)?,
-                        passes: row.get(4)?,
-                        in_progress: row.get(5)?,
-                        agent: row.get(6)?,
-                        steps: parse_steps(row.get(7)?),
-                        work_count: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
-                        completion_criteria: row.get(9)?,
-                        updated_at: row.get(10)?,
-                    })
-                })?
+                .query_map([dir], map_feature_row)?
                 .collect::<Result<Vec<_>, _>>()?;
-
             Ok(features)
         } else {
-            let mut stmt = conn.prepare(
-                "SELECT id, project_dir, description, category, passes, in_progress, agent, steps, work_count, completion_criteria, updated_at
-                 FROM features ORDER BY project_dir, id",
-            )?;
-
+            let mut stmt = conn.prepare(&format!("{} ORDER BY project_dir, id", select_cols))?;
             let features = stmt
-                .query_map([], |row| {
-                    Ok(Feature {
-                        id: row.get(0)?,
-                        project_dir: row.get(1)?,
-                        description: row.get(2)?,
-                        category: row.get(3)?,
-                        passes: row.get(4)?,
-                        in_progress: row.get(5)?,
-                        agent: row.get(6)?,
-                        steps: parse_steps(row.get(7)?),
-                        work_count: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
-                        completion_criteria: row.get(9)?,
-                        updated_at: row.get(10)?,
-                    })
-                })?
+                .query_map([], map_feature_row)?
                 .collect::<Result<Vec<_>, _>>()?;
-
             Ok(features)
         }
     }
@@ -549,4 +615,209 @@ impl Database {
         self.save_config(&config)?;
         Ok(true)
     }
+
+    /// Update a feature with source-aware override logic.
+    /// - Human updates always apply and set a 5-minute lock
+    /// - Agent updates only apply if no human override is active
+    /// Returns true if the update was applied, false if blocked by human override
+    pub fn update_feature(
+        &self,
+        feature_id: &str,
+        update: FeatureUpdate,
+        source: UpdateSource,
+    ) -> Result<bool, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        // First, check if there's an active human override
+        let current_override: Option<String> = conn
+            .query_row(
+                "SELECT human_override_until FROM features WHERE id = ?1",
+                [feature_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+
+        let now = chrono::Utc::now();
+
+        // If source is agent, check if human override is active
+        if matches!(source, UpdateSource::Agent) {
+            if let Some(override_until) = current_override {
+                if let Ok(override_time) = chrono::DateTime::parse_from_rfc3339(&override_until) {
+                    if override_time > now {
+                        tracing::info!(
+                            "Agent update blocked for feature {} - human override active until {}",
+                            feature_id,
+                            override_until
+                        );
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        // Build dynamic UPDATE statement based on provided fields
+        let mut updates = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(v) = update.passes { updates.push("passes = ?"); params.push(Box::new(v)); }
+        if let Some(v) = update.in_progress { updates.push("in_progress = ?"); params.push(Box::new(v)); }
+        if let Some(v) = &update.agent { updates.push("agent = ?"); params.push(Box::new(v.clone())); }
+        if let Some(v) = update.confidence { updates.push("confidence = ?"); params.push(Box::new(v)); }
+        if let Some(v) = &update.model { updates.push("model = ?"); params.push(Box::new(v.clone())); }
+        if let Some(v) = update.is_streaming { updates.push("is_streaming = ?"); params.push(Box::new(v)); }
+        if let Some(v) = update.retry_count { updates.push("retry_count = ?"); params.push(Box::new(v)); }
+        if let Some(v) = update.token_cost { updates.push("token_cost = ?"); params.push(Box::new(v)); }
+        if let Some(v) = update.has_error { updates.push("has_error = ?"); params.push(Box::new(v)); }
+        if let Some(v) = &update.manual_priority { updates.push("manual_priority = ?"); params.push(Box::new(v.clone())); }
+
+        if updates.is_empty() {
+            return Ok(true); // Nothing to update
+        }
+
+        // Add source-specific fields
+        match source {
+            UpdateSource::Human => {
+                // Set 5-minute human override lock
+                let override_until = (now + chrono::Duration::minutes(5)).to_rfc3339();
+                updates.push("human_override_until = ?");
+                params.push(Box::new(override_until));
+            }
+            UpdateSource::Agent => {
+                updates.push("last_agent_update = ?");
+                params.push(Box::new(now.to_rfc3339()));
+            }
+        }
+
+        // Always update updated_at
+        updates.push("updated_at = datetime('now')");
+
+        // Build and execute query
+        let sql = format!(
+            "UPDATE features SET {} WHERE id = ?",
+            updates.join(", ")
+        );
+        params.push(Box::new(feature_id.to_string()));
+
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = conn.execute(&sql, params_refs.as_slice())?;
+
+        Ok(rows > 0)
+    }
+
+    /// Sync a feature from graph database to SQLite cache.
+    /// This upserts the feature, converting graph status to SQLite boolean flags.
+    pub fn sync_feature_from_graph(&self, feature: &GraphFeatureSync) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        let passes = feature.status == "complete";
+        let in_progress = feature.status == "in_progress";
+        let steps_json = serde_json::to_string(&feature.steps).ok();
+
+        conn.execute(
+            "INSERT INTO features (id, project_dir, description, category, passes, in_progress, steps, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
+             ON CONFLICT(id) DO UPDATE SET
+                project_dir = excluded.project_dir,
+                description = excluded.description,
+                category = excluded.category,
+                passes = excluded.passes,
+                in_progress = excluded.in_progress,
+                steps = excluded.steps,
+                updated_at = datetime('now')",
+            params![
+                feature.id,
+                feature.project_dir,
+                feature.description,
+                feature.category,
+                passes,
+                in_progress,
+                steps_json,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Get a single feature by ID
+    pub fn get_feature(&self, feature_id: &str) -> Result<Option<Feature>, rusqlite::Error> {
+        let conn = self.conn.lock().unwrap();
+
+        fn parse_steps(steps_json: Option<String>) -> Option<Vec<String>> {
+            steps_json.and_then(|s| serde_json::from_str(&s).ok())
+        }
+
+        let result = conn.query_row(
+            "SELECT id, project_dir, description, category, passes, in_progress, agent, steps,
+                    work_count, completion_criteria, updated_at,
+                    confidence, model, is_streaming, retry_count, token_cost, has_error, last_agent_update,
+                    manual_priority, human_override_until
+             FROM features WHERE id = ?1",
+            [feature_id],
+            |row| {
+                Ok(Feature {
+                    id: row.get(0)?,
+                    project_dir: row.get(1)?,
+                    description: row.get(2)?,
+                    category: row.get(3)?,
+                    passes: row.get(4)?,
+                    in_progress: row.get(5)?,
+                    agent: row.get(6)?,
+                    steps: parse_steps(row.get(7)?),
+                    work_count: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
+                    completion_criteria: row.get(9)?,
+                    updated_at: row.get(10)?,
+                    confidence: row.get(11)?,
+                    model: row.get(12)?,
+                    is_streaming: row.get::<_, Option<bool>>(13)?.unwrap_or(false),
+                    retry_count: row.get::<_, Option<i32>>(14)?.unwrap_or(0),
+                    token_cost: row.get(15)?,
+                    has_error: row.get::<_, Option<bool>>(16)?.unwrap_or(false),
+                    last_agent_update: row.get(17)?,
+                    manual_priority: row.get(18)?,
+                    human_override_until: row.get(19)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(feature) => Ok(Some(feature)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Source of a feature update - determines override behavior
+#[derive(Debug, Clone, Copy)]
+pub enum UpdateSource {
+    Human, // User interaction (drag-drop, click, etc.) - always wins, sets 5-min lock
+    Agent, // Agent/hook update - blocked if human override active
+}
+
+/// Feature data from graph database for syncing to SQLite cache
+#[derive(Debug, Clone)]
+pub struct GraphFeatureSync {
+    pub id: String,
+    pub project_dir: String,
+    pub description: String,
+    pub category: String,
+    pub status: String,
+    pub steps: Vec<String>,
+}
+
+/// Partial update struct for features - only set fields you want to update
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeatureUpdate {
+    pub passes: Option<bool>,
+    pub in_progress: Option<bool>,
+    pub agent: Option<String>,
+    pub confidence: Option<i32>,
+    pub model: Option<String>,
+    pub is_streaming: Option<bool>,
+    pub retry_count: Option<i32>,
+    pub token_cost: Option<i64>,
+    pub has_error: Option<bool>,
+    pub manual_priority: Option<String>,
 }

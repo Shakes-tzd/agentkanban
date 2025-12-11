@@ -1,8 +1,8 @@
-# GEMINI.md - AgentKanban Development Guide
+# GEMINI.md - Ijoka Development Guide
 
 ## Project Overview
 
-**AgentKanban** is a unified observability and task management system for AI coding agents. Built with Tauri (Rust + Vue), it provides a desktop kanban board that tracks work across multiple AI agents including Claude Code, Codex CLI, and Gemini CLI.
+**Ijoka** (Zulu for "yoke") is a unified observability and orchestration system for AI coding agents. Built with Tauri (Rust + Vue), it provides a desktop kanban board that tracks work across multiple AI agents including Claude Code, Codex CLI, and Gemini CLI.
 
 ## Quick Reference
 
@@ -18,7 +18,7 @@
 
 ```
 ┌─────────────────────────────────────────────────┐
-│         AgentKanban Desktop (Tauri)             │
+│           Ijoka Desktop (Tauri)                 │
 │  Kanban UI │ Activity Timeline │ Stats          │
 └─────────────────────────────────────────────────┘
                        ▲
@@ -51,7 +51,7 @@ pnpm build
 ## Project Structure
 
 ```
-agentkanban/
+ijoka/
 ├── apps/desktop/
 │   ├── src-tauri/           # Rust backend
 │   │   ├── Cargo.toml       # Rust dependencies
@@ -179,7 +179,7 @@ CREATE TABLE sessions (
 
 ## Gemini CLI Integration
 
-To integrate Gemini CLI with AgentKanban:
+To integrate Gemini CLI with Ijoka:
 
 1. **Session Start** - POST to `/sessions/start`
 2. **Tool Use** - POST to `/events` after each tool call

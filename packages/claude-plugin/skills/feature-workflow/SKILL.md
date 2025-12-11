@@ -41,7 +41,7 @@ This skill should be used when:
 
 ## CRITICAL: Activity Tracking
 
-**All tool calls are linked to the active feature (inProgress: true) in AgentKanban.**
+**All tool calls are linked to the active feature (inProgress: true) in Ijoka.**
 
 This means:
 - If no feature is active, activities are NOT tracked
@@ -126,9 +126,9 @@ JSON feels like data. Markdown feels editable. Claude is more careful with struc
 - `/feature-status` - Show progress and next tasks
 - `/next-feature` - Start the next incomplete feature
 
-## Integration with AgentKanban
+## Integration with Ijoka
 
-When AgentKanban is running:
+When Ijoka is running:
 - Features sync to the desktop kanban board
 - Progress updates trigger notifications
 - Activity is logged to the timeline

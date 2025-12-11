@@ -1,0 +1,36 @@
+services:
+  memgraph:
+    image: memgraph/memgraph:latest
+    container_name: ijoka-memgraph
+    ports:
+      - "7687:7687"   # Bolt protocol (Cypher queries)
+      - "7444:7444"   # Memgraph monitoring
+    volumes:
+      - memgraph_data:/var/lib/memgraph
+      - memgraph_log:/var/log/memgraph
+    command: ["--bolt-address=0.0.0.0", "--log-level=WARNING", "--also-log-to-stderr"]
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'RETURN 0;' | mgconsole"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Memgraph Lab for visual graph exploration
+  memgraph-lab:
+    image: memgraph/lab:latest
+    container_name: ijoka-memgraph-lab
+    ports:
+      - "3000:3000"
+    depends_on:
+      - memgraph
+    environment:
+      - QUICK_CONNECT_MG_HOST=memgraph
+      - QUICK_CONNECT_MG_PORT=7687
+    restart: unless-stopped
+
+volumes:
+  memgraph_data:
+    name: ijoka_memgraph_data
+  memgraph_log:
+    name: ijoka_memgraph_log

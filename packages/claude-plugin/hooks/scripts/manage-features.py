@@ -1,10 +1,10 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.9"
-# dependencies = []
+# dependencies = ["neo4j>=5.0"]
 # ///
 """
-AgentKanban Feature Manager
+Ijoka Feature Manager
 Deterministic feature list management - add, validate, query features.
 Used by commands and hooks for consistent feature_list.json handling.
 """
@@ -12,6 +12,7 @@ Used by commands and hooks for consistent feature_list.json handling.
 import json
 import sys
 from pathlib import Path
+import graph_db_helper as db_helper
 
 VALID_CATEGORIES = {"infrastructure", "functional", "ui", "documentation", "testing", "security"}
 
