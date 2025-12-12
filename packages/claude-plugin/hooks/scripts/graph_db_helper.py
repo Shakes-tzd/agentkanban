@@ -447,6 +447,133 @@ def find_similar_feature(project_dir: str, description: str) -> Optional[dict]:
 
 
 # =============================================================================
+# Step Operations (Plan-Aware Activity Tracking)
+# =============================================================================
+
+def create_step(
+    feature_id: str,
+    description: str,
+    order: int,
+    status: str = "pending",
+    expected_tools: Optional[list] = None
+) -> str:
+    """Create a Step node linked to a Feature."""
+    step_id = str(uuid.uuid4())
+    run_write_query("""
+        MATCH (f:Feature {id: $featureId})
+        CREATE (s:Step {
+            id: $stepId,
+            description: $description,
+            status: $status,
+            step_order: $order,
+            expected_tools: $expectedTools,
+            created_at: datetime(),
+            started_at: null,
+            completed_at: null
+        })-[:BELONGS_TO]->(f)
+    """, {
+        "featureId": feature_id,
+        "stepId": step_id,
+        "description": description,
+        "status": status,
+        "order": order,
+        "expectedTools": expected_tools or []
+    })
+    return step_id
+
+
+def get_steps(feature_id: str) -> list:
+    """Get all steps for a feature, ordered by step_order."""
+    results = run_query("""
+        MATCH (s:Step)-[:BELONGS_TO]->(f:Feature {id: $featureId})
+        RETURN s
+        ORDER BY s.step_order ASC
+    """, {"featureId": feature_id})
+    return [_node_to_dict(r, "s") for r in results]
+
+
+def get_active_step(feature_id: str) -> Optional[dict]:
+    """Get the currently active step (in_progress or first pending)."""
+    # First try to get in_progress step
+    results = run_query("""
+        MATCH (s:Step)-[:BELONGS_TO]->(f:Feature {id: $featureId})
+        WHERE s.status = 'in_progress'
+        RETURN s
+        ORDER BY s.step_order ASC
+        LIMIT 1
+    """, {"featureId": feature_id})
+
+    if results:
+        return _node_to_dict(results[0], "s")
+
+    # Fall back to first pending step
+    results = run_query("""
+        MATCH (s:Step)-[:BELONGS_TO]->(f:Feature {id: $featureId})
+        WHERE s.status = 'pending'
+        RETURN s
+        ORDER BY s.step_order ASC
+        LIMIT 1
+    """, {"featureId": feature_id})
+
+    return _node_to_dict(results[0], "s") if results else None
+
+
+def update_step_status(step_id: str, status: str) -> Optional[dict]:
+    """Update a step's status. Valid statuses: pending, in_progress, completed, skipped."""
+    now_field = "started_at" if status == "in_progress" else "completed_at" if status == "completed" else None
+
+    if now_field:
+        results = run_write_query(f"""
+            MATCH (s:Step {{id: $stepId}})
+            SET s.status = $status,
+                s.{now_field} = datetime()
+            RETURN s
+        """, {"stepId": step_id, "status": status})
+    else:
+        results = run_write_query("""
+            MATCH (s:Step {id: $stepId})
+            SET s.status = $status
+            RETURN s
+        """, {"stepId": step_id, "status": status})
+
+    return _node_to_dict(results[0], "s") if results else None
+
+
+def sync_steps_from_todos(feature_id: str, todos: list) -> list:
+    """
+    Sync Step nodes from TodoWrite payload.
+    Creates new steps, updates existing, marks removed as skipped.
+    Returns list of step IDs.
+    """
+    existing_steps = get_steps(feature_id)
+    existing_by_desc = {s.get("description", ""): s for s in existing_steps}
+
+    step_ids = []
+    for i, todo in enumerate(todos):
+        desc = todo.get("content", "")
+        status_map = {"pending": "pending", "in_progress": "in_progress", "completed": "completed"}
+        status = status_map.get(todo.get("status", "pending"), "pending")
+
+        if desc in existing_by_desc:
+            # Update existing step
+            step = existing_by_desc[desc]
+            update_step_status(step["id"], status)
+            step_ids.append(step["id"])
+        else:
+            # Create new step
+            step_id = create_step(feature_id, desc, i, status)
+            step_ids.append(step_id)
+
+    # Mark steps not in todos as skipped
+    current_descs = {todo.get("content", "") for todo in todos}
+    for step in existing_steps:
+        if step.get("description", "") not in current_descs:
+            update_step_status(step["id"], "skipped")
+
+    return step_ids
+
+
+# =============================================================================
 # StatusEvent Operations (Temporal Pattern)
 # =============================================================================
 
