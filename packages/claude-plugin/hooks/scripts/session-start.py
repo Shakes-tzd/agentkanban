@@ -82,13 +82,14 @@ def main():
     # Record session start in database
     db_helper.start_session(session_id, "claude-code", project_dir)
 
-    # Record session start event
+    # Record session start event (use session_id + event_type as unique ID for deduplication)
     db_helper.insert_event(
         event_type="SessionStart",
         source_agent="claude-code",
         session_id=session_id,
         project_dir=project_dir,
-        payload={"action": "session_started", "diagnostics": diagnostic_warnings}
+        payload={"action": "session_started", "diagnostics": diagnostic_warnings},
+        event_id=f"{session_id}-SessionStart"
     )
 
     # Get features from graph database (single source of truth)

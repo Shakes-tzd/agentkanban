@@ -20,6 +20,51 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import graph_db_helper as db_helper
 
+# Background shell cache for linking BashOutput to original commands
+SHELL_CACHE_FILE = Path.home() / ".ijoka" / "background_shells.json"
+
+
+def get_shell_cache() -> dict:
+    """Load the background shell cache."""
+    try:
+        if SHELL_CACHE_FILE.exists():
+            with open(SHELL_CACHE_FILE, 'r') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def save_shell_cache(cache: dict):
+    """Save the background shell cache."""
+    try:
+        SHELL_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SHELL_CACHE_FILE, 'w') as f:
+            json.dump(cache, f)
+    except Exception:
+        pass
+
+
+def cache_background_shell(bash_id: str, command: str, description: str):
+    """Cache a background shell's command info."""
+    cache = get_shell_cache()
+    cache[bash_id] = {
+        "command": command,
+        "description": description
+    }
+    # Keep cache size reasonable (last 50 shells)
+    if len(cache) > 50:
+        keys = list(cache.keys())
+        for key in keys[:-50]:
+            del cache[key]
+    save_shell_cache(cache)
+
+
+def get_cached_shell(bash_id: str) -> dict:
+    """Get cached shell info by bash_id."""
+    cache = get_shell_cache()
+    return cache.get(bash_id, {})
+
 
 def extract_file_paths(tool_input: dict) -> list[str]:
     """Extract file paths from tool input."""
@@ -81,7 +126,7 @@ def check_completion_criteria(
     criteria = feature.get("completionCriteria") or {}
     criteria_type = criteria.get("type", "manual")
 
-    is_error = tool_result.get("is_error", False)
+    is_error = safe_get_result(tool_result, "is_error", False)
     if is_error:
         return False, ""
 
@@ -130,7 +175,7 @@ def maybe_auto_complete(
 
     feature_id = active_feature["id"]
     is_work_tool = tool_name in {"Edit", "Write", "Bash", "Task"}
-    is_error = tool_result.get("is_error", False)
+    is_error = safe_get_result(tool_result, "is_error", False)
 
     # Increment work count for successful work tools
     if is_work_tool and not is_error:
@@ -231,7 +276,7 @@ def generate_workflow_nudges(
     # 2. Feature completion nudge (after successful test/build)
     if tool_name == "Bash" and active_feature:
         cmd = tool_input.get("command", "").lower()
-        is_error = tool_result.get("is_error", False)
+        is_error = safe_get_result(tool_result, "is_error", False)
 
         is_test_or_build = any(x in cmd for x in ["test", "pytest", "jest", "vitest", "build", "cargo build", "pnpm build"])
 
@@ -244,12 +289,24 @@ def generate_workflow_nudges(
     return nudges
 
 
+def safe_get_result(tool_result, key: str, default=None):
+    """Safely get a value from tool_result, handling both dict and list cases."""
+    if isinstance(tool_result, dict):
+        return tool_result.get(key, default)
+    elif isinstance(tool_result, list):
+        # For list results, we can't get specific keys - return default
+        return default
+    return default
+
+
 def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) -> list[str]:
     """Handle PostToolUse events - track all tool calls. Returns workflow nudges."""
     tool_name = hook_input.get("tool_name", "unknown")
     tool_input = hook_input.get("tool_input", {})
     # Claude Code uses "tool_response", manual tests use "tool_result"
     tool_result = hook_input.get("tool_response") or hook_input.get("tool_result", {})
+    # Use tool_use_id as event_id for deduplication
+    tool_use_id = hook_input.get("tool_use_id")
 
     # Skip tracking the tracking script itself
     if "track-event.py" in str(tool_input) or "db_helper" in str(tool_input):
@@ -274,7 +331,7 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
     payload = {
         "filePaths": extract_file_paths(tool_input),
         "inputSummary": summarize_input(tool_name, tool_input),
-        "success": not tool_result.get("is_error", False),
+        "success": not safe_get_result(tool_result, "is_error", False),
         "isDiagnostic": is_diagnostic,
         "isMetaTool": is_meta_tool
     }
@@ -284,12 +341,50 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
         payload["oldString"] = (tool_input.get("old_string", "")[:200] + "...") if len(tool_input.get("old_string", "")) > 200 else tool_input.get("old_string", "")
         payload["newString"] = (tool_input.get("new_string", "")[:200] + "...") if len(tool_input.get("new_string", "")) > 200 else tool_input.get("new_string", "")
         payload["filePath"] = tool_input.get("file_path", "")
+        # Extract line numbers from the Edit response
+        # Claude Code Edit responses typically include line info like "line 1455" or "lines 1455-1488"
+        import re
+        result_output = ""
+        if tool_result:
+            # tool_result can be dict with "output" key, or direct string/content
+            if isinstance(tool_result, dict):
+                result_output = tool_result.get("output", "") or tool_result.get("result", "") or ""
+            elif isinstance(tool_result, str):
+                result_output = tool_result
+            elif isinstance(tool_result, list):
+                # Sometimes response is a list of content blocks
+                result_output = " ".join(str(item) for item in tool_result)
+        # Extract line numbers from the "cat -n" output in Edit response
+        # Format is like "  1234→line content" where 1234 is the line number
+        line_matches = re.findall(r'^\s*(\d+)→', result_output, re.MULTILINE)
+        if line_matches:
+            # Get first and last line numbers from the snippet
+            line_nums = [int(ln) for ln in line_matches]
+            payload["startLine"] = min(line_nums)
+            payload["endLine"] = max(line_nums)
     elif tool_name == "Bash":
         payload["command"] = tool_input.get("command", "")[:500]
         payload["description"] = tool_input.get("description", "")
-        output = tool_result.get("output", "")
+        output = safe_get_result(tool_result, "output", "")
         if output:
             payload["outputPreview"] = (output[:300] + "...") if len(output) > 300 else output
+        # Cache background shell info for later BashOutput lookups
+        # Background shells have run_in_background=true and return a bash_id
+        if tool_input.get("run_in_background"):
+            # Extract bash_id from response - format varies
+            bash_id = safe_get_result(tool_result, "bash_id", "")
+            if not bash_id:
+                # Try extracting from output text like "Background shell started with id: abc123"
+                import re
+                id_match = re.search(r'id[:\s]+([a-f0-9]+)', output or "", re.IGNORECASE)
+                if id_match:
+                    bash_id = id_match.group(1)
+            if bash_id:
+                cache_background_shell(
+                    bash_id,
+                    tool_input.get("command", ""),
+                    tool_input.get("description", "")
+                )
     elif tool_name == "Read":
         payload["filePath"] = tool_input.get("file_path", "")
         payload["offset"] = tool_input.get("offset")
@@ -305,6 +400,16 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
     elif tool_name == "Glob":
         payload["pattern"] = tool_input.get("pattern", "")
         payload["path"] = tool_input.get("path", "")
+    elif tool_name == "BashOutput":
+        bash_id = tool_input.get("bash_id", "")
+        payload["bash_id"] = bash_id
+        # Look up cached shell info to get original command context
+        shell_info = get_cached_shell(bash_id)
+        if shell_info:
+            payload["originalCommand"] = shell_info.get("command", "")
+            payload["commandDescription"] = shell_info.get("description", "")
+    elif tool_name == "KillShell":
+        payload["shell_id"] = tool_input.get("shell_id", "")
 
     # Add feature context if available
     feature_id = None
@@ -314,10 +419,10 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
         payload["featureDescription"] = active_feature["description"]
 
     # Extract success status and summary for top-level Event fields
-    is_success = not tool_result.get("is_error", False)
+    is_success = not safe_get_result(tool_result, "is_error", False)
     summary = summarize_input(tool_name, tool_input)
 
-    # Insert event into database
+    # Insert event into database (use tool_use_id for deduplication)
     db_helper.insert_event(
         event_type="ToolCall",
         source_agent="claude-code",
@@ -327,7 +432,8 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
         payload=payload,
         feature_id=feature_id,
         success=is_success,
-        summary=summary
+        summary=summary,
+        event_id=tool_use_id
     )
 
     # Update session activity
@@ -373,6 +479,7 @@ def handle_stop(hook_input: dict, project_dir: str, session_id: str):
         "lastMessage": (stop_hook_input.get("last_assistant_message", "") or "")[:200]
     }
 
+    # Use session_id + event_type for deduplication (only one Stop per session)
     db_helper.insert_event(
         event_type="AgentStop",
         source_agent="claude-code",
@@ -380,7 +487,8 @@ def handle_stop(hook_input: dict, project_dir: str, session_id: str):
         project_dir=project_dir,
         payload=payload,
         success=True,
-        summary=f"Agent stopped: {stop_reason}"
+        summary=f"Agent stopped: {stop_reason}",
+        event_id=f"{session_id}-AgentStop"
     )
 
 
@@ -393,7 +501,7 @@ def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
     active_feature = db_helper.get_active_feature(project_dir)
     feature_id = active_feature["id"] if active_feature else None
 
-    is_success = not tool_result.get("is_error", False)
+    is_success = not safe_get_result(tool_result, "is_error", False)
     task_desc = tool_input.get("description", "unknown task")
     subagent_type = tool_input.get("subagent_type", "")
 
@@ -401,7 +509,7 @@ def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
         "taskDescription": task_desc,
         "subagentType": subagent_type,
         "success": is_success,
-        "resultSummary": (str(tool_result.get("output", ""))[:200] if tool_result else "")
+        "resultSummary": (str(safe_get_result(tool_result, "output", ""))[:200] if tool_result else "")
     }
 
     if active_feature:
@@ -545,6 +653,11 @@ def handle_user_prompt_submit(hook_input: dict, project_dir: str, session_id: st
     # Create a short summary for the event
     prompt_preview = user_prompt[:50] + "..." if len(user_prompt) > 50 else user_prompt
 
+    # Generate unique event ID based on session + prompt hash for deduplication
+    import hashlib
+    prompt_hash = hashlib.md5(user_prompt.encode()).hexdigest()[:8]
+    event_id = f"{session_id}-UserQuery-{prompt_hash}"
+
     db_helper.insert_event(
         event_type="UserQuery",
         source_agent="claude-code",
@@ -553,7 +666,8 @@ def handle_user_prompt_submit(hook_input: dict, project_dir: str, session_id: st
         payload=payload,
         feature_id=feature_id,
         success=True,
-        summary=f"User: {prompt_preview}"
+        summary=f"User: {prompt_preview}",
+        event_id=event_id
     )
 
 
@@ -568,11 +682,13 @@ def main():
 
     # Debug: log the hook input to see what session_id we're getting
     import sys as _sys
+    import traceback as _tb
     debug_log = Path.home() / ".ijoka" / "hook_debug.log"
     with open(debug_log, "a") as f:
         f.write(f"\n=== {hook_type} at {__import__('datetime').datetime.now()} ===\n")
         f.write(f"hook_input keys: {list(hook_input.keys())}\n")
         f.write(f"session_id from input: {hook_input.get('session_id')}\n")
+        f.write(f"cwd from input: {hook_input.get('cwd')}\n")
         f.write(f"CLAUDE_SESSION_ID env: {os.environ.get('CLAUDE_SESSION_ID')}\n")
         if hook_type == "PostToolUse":
             tool_name = hook_input.get("tool_name", "unknown")

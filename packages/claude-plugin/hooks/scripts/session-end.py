@@ -31,13 +31,14 @@ def main():
     # End session in database
     db_helper.end_session(session_id)
 
-    # Record session end event
+    # Record session end event (use session_id + event_type as unique ID for deduplication)
     db_helper.insert_event(
         event_type="SessionEnd",
         source_agent="claude-code",
         session_id=session_id,
         project_dir=project_dir,
-        payload={"action": "session_ended"}
+        payload={"action": "session_ended"},
+        event_id=f"{session_id}-SessionEnd"
     )
 
     # Output response

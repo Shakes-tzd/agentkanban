@@ -555,15 +555,17 @@ def insert_event(
     payload: Optional[dict] = None,
     feature_id: Optional[str] = None,
     success: bool = True,
-    summary: Optional[str] = None
+    summary: Optional[str] = None,
+    event_id: Optional[str] = None
 ) -> str:
-    """Insert an event and return its ID."""
-    event_id = str(uuid.uuid4())
+    """Insert an event and return its ID. Uses MERGE to prevent duplicates."""
+    if not event_id:
+        event_id = str(uuid.uuid4())
 
     # Ensure project and session exist
     get_or_create_project(project_dir)
 
-    # Create event linked to session
+    # Create event linked to session (MERGE to prevent duplicates)
     cypher = """
         MATCH (p:Project {path: $projectPath})
         MERGE (s:Session {id: $sessionId})-[:IN_PROJECT]->(p)
@@ -574,17 +576,16 @@ def insert_event(
                       s.event_count = 0
         ON MATCH SET s.last_activity = datetime(),
                      s.event_count = s.event_count + 1
-        CREATE (e:Event {
-            id: $eventId,
-            event_type: $eventType,
-            tool_name: $toolName,
-            payload: $payload,
-            timestamp: datetime(),
-            source_agent: $sourceAgent,
-            session_id: $sessionId,
-            success: $success,
-            summary: $summary
-        })-[:TRIGGERED_BY]->(s)
+        MERGE (e:Event {id: $eventId})
+        ON CREATE SET e.event_type = $eventType,
+                      e.tool_name = $toolName,
+                      e.payload = $payload,
+                      e.timestamp = datetime(),
+                      e.source_agent = $sourceAgent,
+                      e.session_id = $sessionId,
+                      e.success = $success,
+                      e.summary = $summary
+        MERGE (e)-[:TRIGGERED_BY]->(s)
     """
     params = {
         "projectPath": project_dir,
