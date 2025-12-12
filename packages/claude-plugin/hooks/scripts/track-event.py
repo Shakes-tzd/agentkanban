@@ -14,8 +14,10 @@ Links events to the active feature.
 import json
 import os
 import sys
+import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 # Import shared database helper
 sys.path.insert(0, str(Path(__file__).parent))
@@ -136,6 +138,89 @@ def get_cached_shell(bash_id: str) -> dict:
     """Get cached shell info by bash_id."""
     cache = get_shell_cache()
     return cache.get(bash_id, {})
+
+
+# =============================================================================
+# Drift Detection Functions
+# =============================================================================
+
+def extract_keywords(text: str) -> set[str]:
+    """Extract meaningful keywords from text for comparison."""
+    if not text:
+        return set()
+    stop_words = {
+        'the', 'a', 'an', 'is', 'are', 'to', 'of', 'in', 'for', 'on', 'with',
+        'and', 'or', 'not', 'this', 'that', 'it', 'be', 'as', 'at', 'by',
+        'from', 'has', 'have', 'had', 'do', 'does', 'did', 'will', 'would',
+        'could', 'should', 'may', 'might', 'must', 'shall', 'can'
+    }
+    words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]{2,}\b', text.lower())
+    return {w for w in words if w not in stop_words}
+
+
+def calculate_drift(step: dict, tool_name: str, tool_input: dict, payload: dict) -> tuple[float, str]:
+    """
+    Calculate drift score between current activity and expected step work.
+    Returns (score, reason) where score is 0.0 (aligned) to 1.0 (drifted).
+    """
+    if not step:
+        return 0.0, "no_step"
+
+    score = 0.0
+    reasons = []
+
+    step_desc = step.get("description", "").lower()
+    expected_tools = step.get("expected_tools") or []
+    file_paths = payload.get("filePaths", [])
+
+    # 1. Tool alignment (0.3 weight)
+    exploration_tools = {"Read", "Glob", "Grep", "WebSearch", "WebFetch"}
+    if expected_tools and tool_name not in expected_tools:
+        if tool_name not in exploration_tools:
+            score += 0.3
+            reasons.append(f"tool:{tool_name} not expected")
+
+    # 2. File/content alignment (0.4 weight)
+    step_keywords = extract_keywords(step_desc)
+    activity_text = " ".join(str(p) for p in file_paths)
+    if tool_input.get("command"):
+        activity_text += " " + tool_input.get("command", "")
+    if tool_input.get("pattern"):
+        activity_text += " " + tool_input.get("pattern", "")
+    activity_keywords = extract_keywords(activity_text)
+
+    if step_keywords and activity_keywords:
+        overlap = len(step_keywords & activity_keywords)
+        total = max(len(step_keywords), 1)
+        if overlap / total < 0.1:
+            score += 0.4
+            reasons.append(f"files unrelated (overlap: {overlap}/{total})")
+        elif overlap / total < 0.2:
+            score += 0.2
+            reasons.append(f"weak alignment ({overlap}/{total})")
+
+    # 3. Sustained drift (0.3 weight)
+    step_id = step.get("id")
+    if step_id:
+        recent_count = db_helper.count_unrelated_events(step_id)
+        if recent_count >= 5:
+            score += 0.3
+            reasons.append(f"sustained ({recent_count} events)")
+        elif recent_count >= 3:
+            score += 0.15
+            reasons.append(f"pattern ({recent_count} events)")
+
+    return min(score, 1.0), "; ".join(reasons) if reasons else "aligned"
+
+
+def generate_drift_warning(step: dict, drift_score: float, drift_reason: str) -> str:
+    """Generate user-friendly drift warning message."""
+    step_desc = step.get("description", "Unknown")[:50]
+    if drift_score >= 0.7:
+        return f"Drift: Your recent actions don't align with the current step: '{step_desc}'. ({drift_reason}). Consider updating your plan or refocusing on the step."
+    elif drift_score >= 0.5:
+        return f"Note: Possible drift from step '{step_desc}'. Are you still working on this step?"
+    return ""
 
 
 def extract_file_paths(tool_input: dict) -> list[str]:
@@ -424,6 +509,50 @@ def handle_todowrite(hook_input: dict, project_dir: str, session_id: str) -> lis
     return []
 
 
+def detect_git_commit(tool_name: str, tool_input: str, tool_output: str) -> Optional[dict]:
+    """Detect git commit from Bash tool call."""
+    if tool_name != "Bash":
+        return None
+
+    # Convert tool_input to string if it's a dict
+    tool_input_str = str(tool_input)
+    tool_output_str = str(tool_output)
+
+    if "git commit" not in tool_input_str:
+        return None
+
+    # Parse commit hash from output: [branch_name abc1234] Message
+    hash_pattern = r'\[[\w/-]+ (?:\(root-commit\) )?([a-f0-9]{7,})\]'
+    match = re.search(hash_pattern, tool_output_str)
+
+    if not match:
+        return None
+
+    commit_hash = match.group(1)
+
+    # Extract message
+    msg_pattern = r'\[[^\]]+\] (.+?)(?:\n|$)'
+    msg_match = re.search(msg_pattern, tool_output_str)
+    message = msg_match.group(1) if msg_match else "No message"
+
+    return {"hash": commit_hash, "message": message[:200]}
+
+
+def handle_git_commit(commit_info: dict, session_id: str, active_feature_id: Optional[str]):
+    """Create Commit node and link to session/feature."""
+    try:
+        db_helper.insert_commit(commit_info["hash"], commit_info["message"])
+        db_helper.link_commit_to_session(commit_info["hash"], session_id)
+
+        if active_feature_id:
+            db_helper.link_commit_to_feature(commit_info["hash"], active_feature_id)
+    except Exception as e:
+        # Log error but don't fail the hook
+        debug_log = Path.home() / ".ijoka" / "hook_debug.log"
+        with open(debug_log, "a") as f:
+            f.write(f"Error handling git commit: {e}\n")
+
+
 def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) -> list[str]:
     """Handle PostToolUse events - track all tool calls. Returns workflow nudges."""
     tool_name = hook_input.get("tool_name", "unknown")
@@ -436,6 +565,16 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
     # Special handling for TodoWrite - capture plan structure
     if tool_name == "TodoWrite":
         return handle_todowrite(hook_input, project_dir, session_id)
+
+    # Detect git commits in Bash tool calls
+    if tool_name == "Bash":
+        tool_output = safe_get_result(tool_result, "output", "") or str(tool_result)
+        commit_info = detect_git_commit(tool_name, tool_input, tool_output)
+        if commit_info:
+            # Get active feature to link commit
+            active_feature = db_helper.get_active_feature(project_dir)
+            active_feature_id = active_feature["id"] if active_feature else None
+            handle_git_commit(commit_info, session_id, active_feature_id)
 
     # Skip tracking the tracking script itself
     if "track-event.py" in str(tool_input) or "db_helper" in str(tool_input):
@@ -559,6 +698,15 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
     if active_step:
         payload["stepDescription"] = active_step.get("description", "")
         payload["stepOrder"] = active_step.get("step_order", 0)
+
+    # Calculate drift score
+    drift_score = 0.0
+    drift_reason = ""
+    if active_step and not is_diagnostic:
+        drift_score, drift_reason = calculate_drift(active_step, tool_name, tool_input, payload)
+        payload["driftScore"] = drift_score
+        if drift_score > 0.3:
+            payload["driftReason"] = drift_reason
 
     # Extract success status and summary for top-level Event fields
     is_success = not safe_get_result(tool_result, "is_error", False)
