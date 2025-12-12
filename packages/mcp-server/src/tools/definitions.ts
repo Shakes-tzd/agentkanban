@@ -227,6 +227,8 @@ These insights can be surfaced to future sessions working on similar tasks.`,
             'testing',
             'infrastructure',
             'refactoring',
+            'planning',  // Knowledge acquisition: research, design, discovery, backlog alignment
+            'meta',      // Process optimization: tooling, observability, workflow improvements
           ],
           description: 'Feature category',
         },

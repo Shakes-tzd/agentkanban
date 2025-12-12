@@ -198,6 +198,62 @@ def get_recent_feature_commits(feature_id: str) -> Optional[str]:
         return None
 
 
+def get_planning_context_summary(project_dir: str) -> Optional[str]:
+    """Get low-context summary of planning and meta work.
+
+    Shows counts and recent titles without loading full content.
+    This gives Claude awareness that planning work exists without context bloat.
+    """
+    try:
+        # Query for planning and meta features (completed and in-progress)
+        cypher = '''
+        MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $project_path})
+        WHERE f.category IN ['planning', 'meta']
+        WITH f.category as category, f.status as status, f.description as desc,
+             f.completed_at as completed_at
+        ORDER BY completed_at DESC
+        RETURN category, status, desc, completed_at
+        '''
+        results = db_helper.run_query(cypher, {"project_path": project_dir})
+
+        if not results:
+            return None
+
+        # Count by category and status
+        planning_done = sum(1 for r in results if r.get("category") == "planning" and r.get("status") == "complete")
+        planning_active = sum(1 for r in results if r.get("category") == "planning" and r.get("status") != "complete")
+        meta_done = sum(1 for r in results if r.get("category") == "meta" and r.get("status") == "complete")
+        meta_active = sum(1 for r in results if r.get("category") == "meta" and r.get("status") != "complete")
+
+        total = len(results)
+        if total == 0:
+            return None
+
+        # Get recent completed titles (last 3)
+        recent = [r for r in results if r.get("status") == "complete"][:3]
+
+        # Build low-context summary
+        lines = ["## Planning & Meta Context"]
+        lines.append(f"**Planning:** {planning_done} completed, {planning_active} active")
+        lines.append(f"**Meta:** {meta_done} completed, {meta_active} active")
+
+        if recent:
+            lines.append("")
+            lines.append("**Recent:**")
+            for r in recent:
+                desc = r.get("desc", "")[:50]
+                cat = r.get("category", "")[:4]
+                lines.append(f"- [{cat}] {desc}")
+
+        lines.append("")
+        lines.append("*Use `ijoka_get_insights` for detailed context or create new planning features as needed.*")
+
+        return "\n".join(lines)
+
+    except Exception:
+        return None
+
+
 def output_response(context: str, status_summary: str = None) -> None:
     """Output JSON response with context and optional terminal notification."""
     # Print status summary to stderr (visible in terminal)
@@ -326,6 +382,11 @@ Do this BEFORE the user asks their first question.""")
 After completing the current feature, these are queued:
 {next_list}""")
 
+        # Add planning/meta context summary (low-context awareness)
+        planning_context = get_planning_context_summary(project_dir)
+        if planning_context:
+            context_parts.append(planning_context)
+
         # Add diagnostics if present
         if diagnostic_section:
             context_parts.append(diagnostic_section)
@@ -386,7 +447,16 @@ When you start working, the system will:
 - Auto-match your work to an existing feature
 - Auto-create a new feature if no match found
 - Auto-complete features when criteria are met
-{diagnostic_section}"""
+"""
+        # Add planning/meta context summary (low-context awareness)
+        planning_context = get_planning_context_summary(project_dir)
+        if planning_context:
+            context += f"\n\n---\n\n{planning_context}"
+
+        # Add diagnostics if present
+        if diagnostic_section:
+            context += diagnostic_section
+
         pending_count = len(pending_features)
         status_summary = f"No active feature | Progress: {completed}/{total} ({percentage}%) | {pending_count} pending"
         output_response(context, status_summary)
