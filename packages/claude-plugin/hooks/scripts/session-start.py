@@ -273,71 +273,104 @@ def main():
         work_count = active_feature.get("workCount", 0)
 
         # Build rich context with previous session, step progress, and commits
-        context_parts = [
-            f"""## Active Feature
+        context_parts = []
 
-**Currently Working On:** {active_feature['description']}
-
-**Progress:** {completed}/{total} features complete ({percentage}%)
-
-**Auto-Completion:** {criteria_type} | Work count: {work_count}
-
-All tool calls will be linked to this feature. Features auto-complete when criteria are met (build passes, tests pass, or work count threshold reached).
-
----
-
-**Switching features:** The system auto-detects when you're working on a different feature and switches automatically based on AI classification."""
-        ]
-
-        # Add previous session summary if available
+        # Add previous session summary if available (what was done)
         prev_session = get_previous_session_summary(session_id, project_dir)
-        if prev_session:
-            context_parts.append(prev_session)
-            context_parts.append("---")
+        has_history = prev_session is not None
 
         # Add step progress for active feature
         step_progress = get_step_progress(active_feature["id"])
-        if step_progress:
-            context_parts.append(step_progress)
-            context_parts.append("---")
 
         # Add recent commits for active feature
         recent_commits = get_recent_feature_commits(active_feature["id"])
+
+        # Build the context
+        context_parts.append(f"""## Session Continuity
+
+**IMPORTANT:** At the start of this session, you MUST greet the user and provide a brief status update. Include:
+1. What was accomplished in the previous session (if any)
+2. Current feature and progress
+3. What remains to be done
+4. Ask the user what they would like to work on next
+
+Do this BEFORE the user asks their first question.""")
+
+        if prev_session:
+            context_parts.append(prev_session)
+
+        context_parts.append(f"""## Current Feature
+
+**Working On:** {active_feature['description']}
+
+**Overall Progress:** {completed}/{total} features complete ({percentage}%)""")
+
+        if step_progress:
+            context_parts.append(step_progress)
+
         if recent_commits:
             context_parts.append(recent_commits)
-            context_parts.append("---")
+
+        # Get remaining features for "what's next" context
+        remaining = [f for f in features if not f.get("passes") and f.get("id") != active_feature.get("id")]
+        if remaining:
+            next_features = remaining[:3]
+            next_list = "\n".join([f"- {f['description'][:60]}" for f in next_features])
+            context_parts.append(f"""## What's Next
+
+After completing the current feature, these are queued:
+{next_list}""")
 
         # Add diagnostics if present
         if diagnostic_section:
             context_parts.append(diagnostic_section)
 
-        context = "\n\n".join(context_parts)
+        context = "\n\n---\n\n".join(context_parts)
         output_response(context)
     else:
-        # No active feature - show summary
+        # No active feature - show summary and ask user what to work on
+        pending_features = [f for f in features if not f.get("passes")]
+
+        # Format pending features
         feature_lines = []
-        for i, f in enumerate(features[:10]):
-            status = "x" if f.get("passes") else " "
-            desc = f.get("description", "")[:60]
-            feature_lines.append(f"[{i}] [{status}] {desc}")
+        for i, f in enumerate(pending_features[:8]):
+            priority = f.get("priority", 0)
+            desc = f.get("description", "")[:55]
+            feature_lines.append(f"{i+1}. {desc}")
 
-        feature_summary = "\n".join(feature_lines)
+        feature_summary = "\n".join(feature_lines) if feature_lines else "No pending features"
 
-        context = f"""## No Active Feature
+        # Add previous session summary if available
+        prev_session = get_previous_session_summary(session_id, project_dir)
+        prev_section = f"\n\n---\n\n{prev_session}" if prev_session else ""
+
+        context = f"""## Session Continuity
+
+**IMPORTANT:** At the start of this session, you MUST greet the user and provide a brief status update. Include:
+1. What was accomplished in the previous session (if any)
+2. Overall project progress
+3. Available features to work on
+4. Ask the user what they would like to work on next
+
+Do this BEFORE the user asks their first question.{prev_section}
+
+---
+
+## Project Status
 
 **Progress:** {completed}/{total} features complete ({percentage}%)
 
-**Features:**
+**Pending Features:**
 {feature_summary}
 
-**Auto-Mode Active:** When you start working, the system will:
-1. Auto-match your work to an existing feature (AI classification)
-2. Auto-create a new feature if no match found
-3. Auto-complete features when completion criteria are met
+---
 
-**Manual Commands (optional):**
-- `/next-feature` - Manually select next feature
-- `/complete-feature` - Force complete active feature
+## How It Works
+
+When you start working, the system will:
+- Auto-match your work to an existing feature
+- Auto-create a new feature if no match found
+- Auto-complete features when criteria are met
 {diagnostic_section}"""
         output_response(context)
 
