@@ -90,6 +90,114 @@ def run_quick_diagnostics(project_dir: str) -> list[str]:
     return warnings
 
 
+def get_previous_session_summary(current_session_id: str, project_dir: str) -> Optional[str]:
+    """Get summary of what the previous session accomplished."""
+    try:
+        # Link to previous session (already done by link_to_previous_session)
+        # Query for previous session
+        cypher = '''
+        MATCH (current:Session {id: $current_id})-[:CONTINUED_FROM]->(prev:Session)
+        OPTIONAL MATCH (prev)-[:MADE_COMMITS]->(c:Commit)
+        WITH prev, collect(DISTINCT c.message) as commits, collect(DISTINCT c.hash) as hashes
+        RETURN prev.started_at as started_at,
+               prev.event_count as event_count,
+               commits, hashes
+        '''
+        results = db_helper.run_query(cypher, {"current_id": current_session_id})
+
+        if not results:
+            return None
+
+        r = results[0]
+        commits = r.get("commits") or []
+        hashes = r.get("hashes") or []
+        event_count = int(r.get("event_count") or 0)
+
+        if not commits and event_count == 0:
+            return None
+
+        # Format as markdown
+        lines = ["## Previous Session Summary"]
+
+        if commits:
+            lines.append(f"**Commits:** {len(commits)} commit(s)")
+            for msg, hash_val in zip(commits[:3], hashes[:3]):
+                short_hash = str(hash_val)[:7] if hash_val else "?"
+                lines.append(f"- `{short_hash}` {msg[:60]}")
+
+        if event_count > 0:
+            lines.append(f"**Activity:** {event_count} event(s)")
+
+        return "\n".join(lines)
+
+    except Exception:
+        return None
+
+
+def get_step_progress(feature_id: str) -> Optional[str]:
+    """Get current plan step progress with icons."""
+    try:
+        steps = db_helper.get_steps(feature_id)
+
+        if not steps:
+            return None
+
+        # Count by status
+        completed = sum(1 for s in steps if s.get("status") == "completed")
+        in_progress = sum(1 for s in steps if s.get("status") == "in_progress")
+        pending = sum(1 for s in steps if s.get("status") == "pending")
+        total = len(steps)
+
+        percentage = int(completed * 100 / total) if total > 0 else 0
+
+        # Format as markdown
+        lines = ["## Plan Progress"]
+        lines.append(f"**Progress:** {completed}/{total} steps ({percentage}%)")
+
+        # Show steps with icons
+        for step in steps[:8]:  # Limit to 8 for readability
+            status = step.get("status", "pending")
+            desc = step.get("description", "")[:60]
+
+            if status == "completed":
+                icon = "✅"
+            elif status == "in_progress":
+                icon = "⏳"
+            elif status == "skipped":
+                icon = "⊘"
+            else:
+                icon = "⭕"
+
+            lines.append(f"{icon} {desc}")
+
+        return "\n".join(lines)
+
+    except Exception:
+        return None
+
+
+def get_recent_feature_commits(feature_id: str) -> Optional[str]:
+    """Get recent commits for the active feature."""
+    try:
+        commits = db_helper.get_feature_commits(feature_id, limit=3)
+
+        if not commits:
+            return None
+
+        # Format as markdown
+        lines = ["## Recent Commits"]
+
+        for commit in commits:
+            hash_val = commit.get("hash", "")[:7]
+            message = commit.get("message", "")[:60]
+            lines.append(f"- `{hash_val}` {message}")
+
+        return "\n".join(lines)
+
+    except Exception:
+        return None
+
+
 def output_response(context: str) -> None:
     """Output JSON response with context."""
     print(json.dumps({
@@ -164,7 +272,9 @@ def main():
             criteria_type = active_feature["completionCriteria"].get("type", "manual")
         work_count = active_feature.get("workCount", 0)
 
-        context = f"""## Active Feature
+        # Build rich context with previous session, step progress, and commits
+        context_parts = [
+            f"""## Active Feature
 
 **Currently Working On:** {active_feature['description']}
 
@@ -176,8 +286,32 @@ All tool calls will be linked to this feature. Features auto-complete when crite
 
 ---
 
-**Switching features:** The system auto-detects when you're working on a different feature and switches automatically based on AI classification.
-{diagnostic_section}"""
+**Switching features:** The system auto-detects when you're working on a different feature and switches automatically based on AI classification."""
+        ]
+
+        # Add previous session summary if available
+        prev_session = get_previous_session_summary(session_id, project_dir)
+        if prev_session:
+            context_parts.append(prev_session)
+            context_parts.append("---")
+
+        # Add step progress for active feature
+        step_progress = get_step_progress(active_feature["id"])
+        if step_progress:
+            context_parts.append(step_progress)
+            context_parts.append("---")
+
+        # Add recent commits for active feature
+        recent_commits = get_recent_feature_commits(active_feature["id"])
+        if recent_commits:
+            context_parts.append(recent_commits)
+            context_parts.append("---")
+
+        # Add diagnostics if present
+        if diagnostic_section:
+            context_parts.append(diagnostic_section)
+
+        context = "\n\n".join(context_parts)
         output_response(context)
     else:
         # No active feature - show summary
