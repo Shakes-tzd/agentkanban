@@ -758,10 +758,21 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
         tool_output = safe_get_result(tool_result, "output", "") or str(tool_result)
         commit_info = detect_git_commit(tool_name, tool_input, tool_output)
         if commit_info:
-            # Get active feature to link commit
-            active_feature = db_helper.get_active_feature(project_dir)
-            active_feature_id = active_feature["id"] if active_feature else None
-            handle_git_commit(commit_info, session_id, active_feature_id)
+            # Smart attribution for commit linking
+            commit_features = db_helper.get_active_features(project_dir)
+            if len(commit_features) > 1:
+                # Use commit message for attribution context
+                commit_feature, _, _ = db_helper.score_attribution(
+                    features=commit_features,
+                    tool_name="Bash",
+                    tool_input={"command": commit_info.get("message", "")}
+                )
+                commit_feature_id = commit_feature["id"] if commit_feature else None
+            elif commit_features:
+                commit_feature_id = commit_features[0]["id"]
+            else:
+                commit_feature_id = None
+            handle_git_commit(commit_info, session_id, commit_feature_id)
 
     # Skip tracking the tracking script itself
     if "track-event.py" in str(tool_input) or "db_helper" in str(tool_input):
@@ -772,6 +783,7 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
     is_meta_tool = is_mcp_meta_tool(tool_name)
 
     # Get the appropriate feature for this activity
+    attribution_reason = None
     if is_meta_tool:
         # MCP ijoka tools go to the Session Work pseudo-feature
         active_feature = db_helper.get_or_create_session_work_feature(project_dir)
@@ -779,8 +791,24 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
         # Other diagnostic commands don't get attributed to any feature
         active_feature = None
     else:
-        # Normal tools get attributed to the active feature
-        active_feature = db_helper.get_active_feature(project_dir)
+        # Smart attribution: get ALL active features and score for best match
+        active_features = db_helper.get_active_features(project_dir)
+
+        if len(active_features) > 1:
+            # Multiple features in progress - use scoring to determine attribution
+            file_path = tool_input.get("file_path", "")
+            active_feature, score, attribution_reason = db_helper.score_attribution(
+                features=active_features,
+                file_path=file_path,
+                tool_name=tool_name,
+                tool_input=tool_input
+            )
+        elif active_features:
+            # Single active feature - use it directly
+            active_feature = active_features[0]
+        else:
+            # No active features
+            active_feature = None
 
     # Build detailed payload based on tool type
     payload = {
@@ -870,8 +898,12 @@ def handle_post_tool_use(hook_input: dict, project_dir: str, session_id: str) ->
     feature_id = None
     if active_feature:
         feature_id = active_feature["id"]
-        payload["featureCategory"] = active_feature["category"]
-        payload["featureDescription"] = active_feature["description"]
+        payload["featureCategory"] = active_feature.get("category", "")
+        payload["featureDescription"] = active_feature.get("description", "")
+        payload["featureType"] = active_feature.get("type", "feature")
+        payload["featureIsPrimary"] = active_feature.get("is_primary", False)
+        if attribution_reason:
+            payload["attributionReason"] = attribution_reason
 
     # Get active step for step-level tracking
     step_id = None
@@ -984,7 +1016,19 @@ def handle_subagent_stop(hook_input: dict, project_dir: str, session_id: str):
     # Claude Code uses "tool_response", manual tests use "tool_result"
     tool_result = hook_input.get("tool_response") or hook_input.get("tool_result", {})
 
-    active_feature = db_helper.get_active_feature(project_dir)
+    # Smart attribution for subagent events
+    active_features = db_helper.get_active_features(project_dir)
+    if len(active_features) > 1:
+        # Use task description for attribution context
+        active_feature, _, _ = db_helper.score_attribution(
+            features=active_features,
+            tool_name="Task",
+            tool_input=tool_input
+        )
+    elif active_features:
+        active_feature = active_features[0]
+    else:
+        active_feature = None
     feature_id = active_feature["id"] if active_feature else None
 
     is_success = not safe_get_result(tool_result, "is_error", False)

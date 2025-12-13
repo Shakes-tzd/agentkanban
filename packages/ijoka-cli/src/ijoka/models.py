@@ -90,6 +90,7 @@ class Feature(BaseModel):
     type: WorkItemType = WorkItemType.FEATURE
     status: FeatureStatus = FeatureStatus.PENDING
     priority: int = Field(default=50, ge=-100, le=100)
+    is_primary: bool = Field(default=False)  # Primary focus for event attribution
     steps: list[str] = Field(default_factory=list)
     work_count: int = Field(default=0, ge=0)
 
@@ -120,6 +121,7 @@ class FeatureListItem(BaseModel):
     type: WorkItemType = WorkItemType.FEATURE
     status: FeatureStatus
     priority: int
+    is_primary: bool = False
     work_count: int = 0
     assigned_agent: Optional[str] = None
 

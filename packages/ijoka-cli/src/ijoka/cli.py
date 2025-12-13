@@ -474,6 +474,41 @@ def feature_update(
         client.close()
 
 
+@feature_app.command("focus")
+def feature_focus(
+    feature_id: Annotated[str, typer.Argument(help="Feature ID to set as primary focus")],
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """
+    Set a feature as the primary focus for event attribution.
+
+    When multiple features are in_progress, events are attributed using smart
+    scoring. Setting a feature as primary gives it a bonus in attribution
+    scoring, making it more likely to receive events.
+
+    Use this when you want to explicitly indicate which feature you're
+    primarily working on while having multiple features active.
+    """
+    client = get_client_safe()
+
+    try:
+        feature = client.set_primary_focus(feature_id=feature_id)
+
+        if json_output:
+            output_json({"success": True, "feature": feature.model_dump()})
+            return
+
+        console.print(f"[green]✓ Set as primary focus:[/green] {feature.description}")
+        console.print(f"[dim]ID: {feature.id}[/dim]")
+        console.print(f"[dim]Events will now be preferentially attributed to this feature.[/dim]")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    finally:
+        client.close()
+
+
 @feature_app.command("discover")
 def feature_discover(
     description: Annotated[str, typer.Argument(help="Feature description")],

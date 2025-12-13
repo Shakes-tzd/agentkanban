@@ -191,11 +191,29 @@ def get_features(project_dir: str) -> list[dict]:
 
 
 def get_active_feature(project_dir: str) -> Optional[dict]:
-    """Get the currently active feature (status = 'in_progress'). Returns format compatible with db_helper."""
+    """Get the primary active feature, or first in_progress if no primary."""
+    # First try to get the primary feature
+    results = run_query(
+        """
+        MATCH (f:Feature {status: 'in_progress', is_primary: true})-[:BELONGS_TO]->(p:Project {path: $projectPath})
+        RETURN f
+        LIMIT 1
+        """,
+        {"projectPath": project_dir}
+    )
+    if results:
+        f = _node_to_dict(results[0], "f")
+        f["passes"] = False
+        f["inProgress"] = True
+        f["workCount"] = f.get("work_count", 0)
+        return f
+
+    # Fallback to any in_progress feature (highest priority)
     results = run_query(
         """
         MATCH (f:Feature {status: 'in_progress'})-[:BELONGS_TO]->(p:Project {path: $projectPath})
         RETURN f
+        ORDER BY f.priority DESC
         LIMIT 1
         """,
         {"projectPath": project_dir}
@@ -203,12 +221,148 @@ def get_active_feature(project_dir: str) -> Optional[dict]:
     if not results:
         return None
     f = _node_to_dict(results[0], "f")
-    # Convert graph status to db_helper format for compatibility
     status = f.get("status", "pending")
     f["passes"] = status == "complete"
     f["inProgress"] = status == "in_progress"
     f["workCount"] = f.get("work_count", 0)
     return f
+
+
+def get_active_features(project_dir: str) -> list[dict]:
+    """Get ALL currently active (in_progress) features."""
+    results = run_query(
+        """
+        MATCH (f:Feature {status: 'in_progress'})-[:BELONGS_TO]->(p:Project {path: $projectPath})
+        RETURN f
+        ORDER BY f.is_primary DESC, f.priority DESC
+        """,
+        {"projectPath": project_dir}
+    )
+    features = []
+    for record in results:
+        f = _node_to_dict(record, "f")
+        f["passes"] = False
+        f["inProgress"] = True
+        f["workCount"] = f.get("work_count", 0)
+        features.append(f)
+    return features
+
+
+# Type priority weights for attribution
+_TYPE_PRIORITY = {
+    "hotfix": 1.0,
+    "bug": 0.8,
+    "feature": 0.6,
+    "spike": 0.4,
+    "chore": 0.3,
+    "epic": 0.2,
+}
+
+
+def score_attribution(
+    features: list[dict],
+    file_path: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    tool_input: Optional[dict] = None,
+) -> tuple[Optional[dict], float, str]:
+    """
+    Score features to determine which should receive event attribution.
+
+    Uses a weighted scoring system:
+    - File pattern match: 0.4 weight
+    - Keyword overlap: 0.3 weight
+    - Type priority: 0.2 weight
+    - is_primary bonus: 0.1
+
+    Returns:
+        (best_feature, score, reason) or (None, 0, "no_match")
+    """
+    import re
+    from fnmatch import fnmatch
+
+    def extract_keywords(text: str) -> set[str]:
+        if not text:
+            return set()
+        stop_words = {
+            'the', 'a', 'an', 'is', 'are', 'to', 'of', 'in', 'for', 'on', 'with',
+            'and', 'or', 'not', 'this', 'that', 'it', 'be', 'as', 'at', 'by',
+            'from', 'has', 'have', 'had', 'do', 'does', 'did', 'will', 'would',
+            'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'add',
+            'update', 'fix', 'implement', 'create', 'remove', 'delete', 'change'
+        }
+        words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]{2,}\b', text.lower())
+        return {w for w in words if w not in stop_words}
+
+    if not features:
+        return None, 0.0, "no_features"
+
+    # If only one feature, return it
+    if len(features) == 1:
+        return features[0], 1.0, "only_active"
+
+    # Extract activity context
+    activity_text = ""
+    if file_path:
+        activity_text += file_path + " "
+    if tool_input:
+        if tool_input.get("command"):
+            activity_text += tool_input["command"] + " "
+        if tool_input.get("pattern"):
+            activity_text += tool_input["pattern"] + " "
+        if tool_input.get("old_string"):
+            activity_text += tool_input["old_string"][:200] + " "
+        if tool_input.get("new_string"):
+            activity_text += tool_input["new_string"][:200] + " "
+
+    activity_keywords = extract_keywords(activity_text)
+
+    best_feature = None
+    best_score = 0.0
+    best_reason = "no_match"
+
+    for feature in features:
+        score = 0.0
+        reasons = []
+
+        # 1. File pattern matching (0.4 weight)
+        file_patterns = feature.get("file_patterns") or []
+        if file_path and file_patterns:
+            for pattern in file_patterns:
+                if fnmatch(file_path, pattern) or pattern in file_path:
+                    score += 0.4
+                    reasons.append(f"pattern:{pattern}")
+                    break
+
+        # 2. Keyword overlap (0.3 weight)
+        feature_keywords = extract_keywords(feature.get("description", ""))
+        if feature_keywords and activity_keywords:
+            overlap = len(feature_keywords & activity_keywords)
+            total = max(len(feature_keywords), 1)
+            keyword_score = min(overlap / total, 1.0) * 0.3
+            if keyword_score > 0:
+                score += keyword_score
+                reasons.append(f"keywords:{overlap}/{total}")
+
+        # 3. Type priority (0.2 weight)
+        feature_type = feature.get("type", "feature")
+        type_weight = _TYPE_PRIORITY.get(feature_type, 0.5)
+        score += type_weight * 0.2
+
+        # 4. Primary bonus (0.1)
+        if feature.get("is_primary"):
+            score += 0.1
+            reasons.append("primary")
+
+        if score > best_score:
+            best_score = score
+            best_feature = feature
+            best_reason = "; ".join(reasons) if reasons else f"type:{feature_type}"
+
+    # Require minimum score threshold
+    if best_score < 0.15:
+        return None, best_score, "below_threshold"
+
+    return best_feature, best_score, best_reason
 
 
 def get_or_create_session_work_feature(project_dir: str) -> dict:

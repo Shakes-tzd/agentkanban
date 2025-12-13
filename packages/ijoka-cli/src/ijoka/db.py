@@ -5,10 +5,12 @@ Provides connection to Memgraph/Neo4j for feature tracking and observability.
 """
 
 import os
+import re
 import subprocess
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
+from fnmatch import fnmatch
 from typing import Generator, Optional
 
 from loguru import logger
@@ -199,6 +201,7 @@ class IjokaClient:
                     type=WorkItemType(node.get("type", "feature")),
                     status=FeatureStatus(node["status"]),
                     priority=int(node.get("priority", 0)),
+                    is_primary=bool(node.get("is_primary", False)),
                     work_count=int(node.get("work_count", 0)),
                     assigned_agent=node.get("assigned_agent"),
                 )
@@ -226,12 +229,27 @@ class IjokaClient:
             return self._node_to_feature(record["f"])
 
     def get_active_feature(self) -> Optional[Feature]:
-        """Get the currently active (in_progress) feature."""
+        """Get the primary active feature, or first in_progress if no primary."""
         with self.session() as session:
+            # First try to get the primary feature
+            result = session.run(
+                """
+                MATCH (f:Feature {status: 'in_progress', is_primary: true})-[:BELONGS_TO]->(p:Project {path: $path})
+                RETURN f
+                LIMIT 1
+                """,
+                path=self._project_path,
+            )
+            record = result.single()
+            if record:
+                return self._node_to_feature(record["f"])
+
+            # Fallback to any in_progress feature
             result = session.run(
                 """
                 MATCH (f:Feature {status: 'in_progress'})-[:BELONGS_TO]->(p:Project {path: $path})
                 RETURN f
+                ORDER BY f.priority DESC
                 LIMIT 1
                 """,
                 path=self._project_path,
@@ -239,6 +257,50 @@ class IjokaClient:
             record = result.single()
             if not record:
                 return None
+            return self._node_to_feature(record["f"])
+
+    def get_active_features(self) -> list[Feature]:
+        """Get ALL currently active (in_progress) features."""
+        with self.session() as session:
+            result = session.run(
+                """
+                MATCH (f:Feature {status: 'in_progress'})-[:BELONGS_TO]->(p:Project {path: $path})
+                RETURN f
+                ORDER BY f.is_primary DESC, f.priority DESC
+                """,
+                path=self._project_path,
+            )
+            return [self._node_to_feature(record["f"]) for record in result]
+
+    def set_primary_focus(self, feature_id: str) -> Feature:
+        """
+        Set a feature as the primary focus for event attribution.
+        Clears is_primary from all other features.
+        """
+        with self.session(mode="WRITE") as session:
+            # Clear all existing primary flags
+            session.run(
+                """
+                MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $path})
+                WHERE f.is_primary = true
+                SET f.is_primary = false
+                """,
+                path=self._project_path,
+            )
+
+            # Set the new primary
+            result = session.run(
+                """
+                MATCH (f:Feature {id: $id})-[:BELONGS_TO]->(p:Project {path: $path})
+                SET f.is_primary = true, f.updated_at = datetime()
+                RETURN f
+                """,
+                path=self._project_path,
+                id=feature_id,
+            )
+            record = result.single()
+            if not record:
+                raise ValueError(f"Feature not found: {feature_id}")
             return self._node_to_feature(record["f"])
 
     def get_next_feature(self) -> Optional[Feature]:
@@ -989,6 +1051,7 @@ class IjokaClient:
             type=WorkItemType(node.get("type", "feature")),
             status=FeatureStatus(node["status"]),
             priority=int(node.get("priority", 0)),
+            is_primary=bool(node.get("is_primary", False)),
             steps=list(node.get("steps", [])),
             work_count=int(node.get("work_count", 0)),
             assigned_agent=node.get("assigned_agent"),
@@ -1012,6 +1075,130 @@ class IjokaClient:
         if hasattr(value, "to_native"):
             return value.to_native()
         return None
+
+
+# =============================================================================
+# ATTRIBUTION SCORING
+# =============================================================================
+
+# Type priority weights for attribution (higher = more likely to get events)
+TYPE_PRIORITY = {
+    "hotfix": 1.0,   # Urgent - always gets attribution
+    "bug": 0.8,      # Important fixes
+    "feature": 0.6,  # Standard development
+    "spike": 0.4,    # Research - less likely to have specific files
+    "chore": 0.3,    # Maintenance
+    "epic": 0.2,     # Container - usually delegates to children
+}
+
+
+def _extract_keywords(text: str) -> set[str]:
+    """Extract meaningful keywords from text for matching."""
+    if not text:
+        return set()
+    stop_words = {
+        'the', 'a', 'an', 'is', 'are', 'to', 'of', 'in', 'for', 'on', 'with',
+        'and', 'or', 'not', 'this', 'that', 'it', 'be', 'as', 'at', 'by',
+        'from', 'has', 'have', 'had', 'do', 'does', 'did', 'will', 'would',
+        'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'add',
+        'update', 'fix', 'implement', 'create', 'remove', 'delete', 'change'
+    }
+    words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]{2,}\b', text.lower())
+    return {w for w in words if w not in stop_words}
+
+
+def score_attribution(
+    features: list[Feature],
+    file_path: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    tool_input: Optional[dict] = None,
+) -> tuple[Optional[Feature], float, str]:
+    """
+    Score features to determine which should receive event attribution.
+
+    Uses a weighted scoring system:
+    - File pattern match: 0.4 weight
+    - Keyword overlap: 0.3 weight
+    - Type priority: 0.2 weight
+    - is_primary bonus: 0.1
+
+    Args:
+        features: List of active features to score
+        file_path: File being edited (if applicable)
+        tool_name: Tool being used
+        tool_input: Tool input parameters
+
+    Returns:
+        (best_feature, score, reason) or (None, 0, "no_match")
+    """
+    if not features:
+        return None, 0.0, "no_features"
+
+    # If only one feature, return it
+    if len(features) == 1:
+        return features[0], 1.0, "only_active"
+
+    # Extract activity context
+    activity_text = ""
+    if file_path:
+        activity_text += file_path + " "
+    if tool_input:
+        if tool_input.get("command"):
+            activity_text += tool_input["command"] + " "
+        if tool_input.get("pattern"):
+            activity_text += tool_input["pattern"] + " "
+        if tool_input.get("old_string"):
+            activity_text += tool_input["old_string"][:200] + " "
+        if tool_input.get("new_string"):
+            activity_text += tool_input["new_string"][:200] + " "
+
+    activity_keywords = _extract_keywords(activity_text)
+
+    best_feature = None
+    best_score = 0.0
+    best_reason = "no_match"
+
+    for feature in features:
+        score = 0.0
+        reasons = []
+
+        # 1. File pattern matching (0.4 weight)
+        if file_path and feature.file_patterns:
+            for pattern in feature.file_patterns:
+                if fnmatch(file_path, pattern) or pattern in file_path:
+                    score += 0.4
+                    reasons.append(f"pattern:{pattern}")
+                    break
+
+        # 2. Keyword overlap (0.3 weight)
+        feature_keywords = _extract_keywords(feature.description)
+        if feature_keywords and activity_keywords:
+            overlap = len(feature_keywords & activity_keywords)
+            total = max(len(feature_keywords), 1)
+            keyword_score = min(overlap / total, 1.0) * 0.3
+            if keyword_score > 0:
+                score += keyword_score
+                reasons.append(f"keywords:{overlap}/{total}")
+
+        # 3. Type priority (0.2 weight)
+        type_weight = TYPE_PRIORITY.get(feature.type.value, 0.5)
+        score += type_weight * 0.2
+
+        # 4. Primary bonus (0.1)
+        if feature.is_primary:
+            score += 0.1
+            reasons.append("primary")
+
+        if score > best_score:
+            best_score = score
+            best_feature = feature
+            best_reason = "; ".join(reasons) if reasons else f"type:{feature.type.value}"
+
+    # Require minimum score threshold
+    if best_score < 0.15:
+        return None, best_score, "below_threshold"
+
+    return best_feature, best_score, best_reason
 
 
 # Convenience function for quick access
