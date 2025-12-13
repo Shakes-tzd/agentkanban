@@ -4,20 +4,209 @@
 # dependencies = ["neo4j>=5.0"]
 # ///
 """
-Ijoka Session End Hook (SQLite Version)
+Ijoka Session End Hook
 
-Records session end in database.
+Records session end in database and parses transcript for analytics.
 """
 
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Optional, Iterator, Any
 
 # Import shared helpers
 sys.path.insert(0, str(Path(__file__).parent))
 import graph_db_helper as db_helper
 from git_utils import resolve_project_path
+
+
+# =============================================================================
+# TRANSCRIPT PARSING (inline to avoid external dependencies)
+# =============================================================================
+
+
+def parse_timestamp(ts: Any) -> datetime:
+    """Parse various timestamp formats."""
+    if ts is None:
+        return datetime.now()
+    if isinstance(ts, datetime):
+        return ts
+    if isinstance(ts, str):
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.now()
+    return datetime.now()
+
+
+def parse_transcript_entry(data: dict) -> Optional[dict]:
+    """Parse a single JSONL line into a transcript entry dict."""
+    entry_type = data.get("type")
+
+    if entry_type == "queue-operation":
+        return {
+            "type": entry_type,
+            "timestamp": parse_timestamp(data.get("timestamp")).isoformat(),
+            "operation": data.get("operation"),
+        }
+
+    if entry_type not in ("user", "assistant"):
+        return None
+
+    message = data.get("message", {})
+
+    entry = {
+        "type": entry_type,
+        "timestamp": parse_timestamp(data.get("timestamp")).isoformat(),
+        "uuid": data.get("uuid"),
+        "parent_uuid": data.get("parentUuid"),
+        "is_sidechain": data.get("isSidechain", False),
+        "model": None,
+        "content": None,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "tool_calls": [],
+        "stop_reason": None,
+    }
+
+    if entry_type == "user":
+        content = message.get("content")
+        if isinstance(content, str):
+            entry["content"] = content
+        elif isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+            entry["content"] = "\n".join(text_parts) if text_parts else None
+
+    elif entry_type == "assistant":
+        entry["model"] = message.get("model")
+        entry["stop_reason"] = message.get("stop_reason")
+
+        # Token usage
+        usage = message.get("usage", {})
+        entry["input_tokens"] = usage.get("input_tokens", 0)
+        entry["output_tokens"] = usage.get("output_tokens", 0)
+        entry["cache_creation_tokens"] = usage.get("cache_creation_input_tokens", 0)
+        entry["cache_read_tokens"] = usage.get("cache_read_input_tokens", 0)
+
+        # Content blocks
+        content = message.get("content", [])
+        if isinstance(content, list):
+            text_parts = []
+            tool_calls = []
+            for block in content:
+                if isinstance(block, dict):
+                    block_type = block.get("type")
+                    if block_type == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif block_type == "tool_use":
+                        tool_calls.append({
+                            "id": block.get("id", ""),
+                            "name": block.get("name", ""),
+                            "input": block.get("input", {}),
+                        })
+            entry["content"] = "\n".join(text_parts) if text_parts else None
+            entry["tool_calls"] = tool_calls
+
+    return entry
+
+
+def parse_transcript_file(transcript_path: str) -> Iterator[dict]:
+    """Parse a transcript JSONL file, yielding entry dicts."""
+    path = Path(transcript_path)
+    if not path.exists():
+        return
+
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                entry = parse_transcript_entry(data)
+                if entry:
+                    yield entry
+            except (json.JSONDecodeError, Exception):
+                continue
+
+
+def sync_transcript_to_graph(
+    session_id: str,
+    project_dir: str,
+    transcript_path: str
+) -> dict:
+    """
+    Parse and sync a transcript to Memgraph.
+
+    Returns dict with sync statistics.
+    """
+    path = Path(transcript_path)
+    if not path.exists():
+        return {"error": f"Transcript not found: {transcript_path}", "synced": 0}
+
+    # Create TranscriptSession node
+    db_helper.create_transcript_session(
+        session_id=session_id,
+        project_dir=project_dir,
+        transcript_path=transcript_path,
+        file_modified_at=datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+    )
+
+    # Parse and insert entries
+    entry_count = 0
+    tool_count = 0
+    errors = []
+
+    for entry in parse_transcript_file(transcript_path):
+        try:
+            tool_calls = entry.get("tool_calls")
+            if tool_calls:
+                tool_count += len(tool_calls)
+
+            db_helper.insert_transcript_entry(
+                session_id=session_id,
+                entry_type=entry["type"],
+                timestamp=entry["timestamp"],
+                uuid=entry.get("uuid"),
+                parent_uuid=entry.get("parent_uuid"),
+                content=entry.get("content"),
+                model=entry.get("model"),
+                input_tokens=entry.get("input_tokens", 0),
+                output_tokens=entry.get("output_tokens", 0),
+                cache_creation_tokens=entry.get("cache_creation_tokens", 0),
+                cache_read_tokens=entry.get("cache_read_tokens", 0),
+                tool_calls=tool_calls if tool_calls else None,
+                stop_reason=entry.get("stop_reason"),
+                is_sidechain=entry.get("is_sidechain", False)
+            )
+            entry_count += 1
+
+        except Exception as e:
+            errors.append(str(e))
+            if len(errors) > 10:
+                break
+
+    return {
+        "session_id": session_id,
+        "entries_synced": entry_count,
+        "tool_uses_synced": tool_count,
+        "errors": errors[:5] if errors else [],
+        "success": len(errors) == 0
+    }
+
+
+# =============================================================================
+# MAIN HOOK
+# =============================================================================
 
 
 def main():
@@ -48,12 +237,37 @@ def main():
         event_id=f"{session_id}-SessionEnd"
     )
 
+    # Parse and sync transcript if available
+    transcript_path = hook_input.get("transcript_path")
+    transcript_result = None
+
+    if transcript_path and Path(transcript_path).exists():
+        try:
+            transcript_result = sync_transcript_to_graph(
+                session_id=session_id,
+                project_dir=project_dir,
+                transcript_path=transcript_path
+            )
+        except Exception as e:
+            transcript_result = {"error": str(e), "synced": 0}
+
     # Output response
-    print(json.dumps({
+    response = {
         "hookSpecificOutput": {
             "hookEventName": "SessionEnd"
         }
-    }))
+    }
+
+    if transcript_result:
+        response["hookSpecificOutput"]["transcript"] = {
+            "synced": transcript_result.get("success", False),
+            "entries": transcript_result.get("entries_synced", 0),
+            "tool_uses": transcript_result.get("tool_uses_synced", 0),
+        }
+        if transcript_result.get("errors"):
+            response["hookSpecificOutput"]["transcript"]["errors"] = len(transcript_result["errors"])
+
+    print(json.dumps(response))
 
 
 if __name__ == "__main__":
