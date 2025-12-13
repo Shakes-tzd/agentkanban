@@ -1,124 +1,92 @@
 metadata:
-  name: Tier 1 Claude Code Observability
-  created: 20251211-143000
+  name: Alignment System
+  created: 20251213-143000
   status: ready
-overview: "Upgrade Ijoka's Claude Code integration from activity logging to semantic\
-  \ \nobservability. Capture plans via TodoWrite, track step progression, detect \n\
-  drift/stuckness, and inject feedback via hooks.\n"
+overview: "Wire up existing drift detection code, add feature-level alignment fallback,\n\
+  and surface warnings via additionalContext. Most infrastructure exists - \nthis\
+  \ plan connects the pieces and adds missing fallbacks.\n"
 research:
-  approach: Plan-aware monitoring with behavioral drift detection
+  approach: Hybrid Plan-Observation with keyword alignment (no embeddings)
   libraries:
-  - name: neo4j (existing)
-    reason: Already using Memgraph with Neo4j driver
+  - name: None needed
+    reason: All dependencies already in place
   patterns:
-  - file: packages/claude-plugin/hooks/scripts/track-event.py:302-469
-    description: PostToolUse handler pattern with feature linking
-  - file: packages/claude-plugin/hooks/scripts/graph_db_helper.py:549-623
-    description: Event insertion with deduplication
-  - file: packages/mcp-server/src/tools/handlers.ts:56-67
-    description: MCP activity recording pattern
+  - file: packages/claude-plugin/hooks/scripts/track-event.py:162
+    description: Existing calculate_drift() function
+  - file: packages/claude-plugin/hooks/scripts/track-event.py:460
+    description: Existing handle_todowrite() function
+  - file: packages/claude-plugin/hooks/scripts/graph_db_helper.py:1353
+    description: Nudge tracking pattern (has_been_nudged/record_nudge)
   specifications:
-  - requirement: 'Stuckness: No progress for 3-5 min + repeated patterns'
+  - requirement: Drift score 0.0-1.0 (1.0 = aligned)
     status: must_follow
-  - requirement: 'Drift: Actions unrelated to active step'
+  - requirement: Warning threshold >= 0.7 drift
     status: must_follow
-  - requirement: Feedback via additionalContext in hook response
+  - requirement: No embeddings or external services
     status: must_follow
   dependencies:
     existing:
-    - neo4j>=5.0 (Python)
-    - Memgraph (Docker)
+    - neo4j (Memgraph driver)
+    - re (regex for keyword extraction)
     new: []
 features:
-- plan-capture
-- step-tracking
-- drift-detection
-- stuckness-detection
-- feedback-injection
+- feature-level-alignment
+- todowrite-step-verification
+- drift-warning-injection
+- session-work-accumulator
 tasks:
 - id: task-0
-  name: Graph Schema Migration - Add Step Nodes
+  name: Feature-Level Alignment Calculator
   file: tasks/task-0.md
-  priority: blocker
+  priority: high
   dependencies: []
 - id: task-1
-  name: TodoWrite Hook - Capture Plans as Steps
+  name: "Verify TodoWrite \u2192 Steps Sync"
   file: tasks/task-1.md
-  priority: blocker
-  dependencies:
-  - task-0
+  priority: high
+  dependencies: []
 - id: task-2
-  name: "Step\u2194Event Linking in PostToolUse"
+  name: Wire Drift Warnings to additionalContext
   file: tasks/task-2.md
-  priority: high
-  dependencies:
-  - task-0
-  - task-1
+  priority: blocker
+  dependencies: []
 - id: task-3
-  name: Drift Detection Algorithm
+  name: Session Work Accumulator Alert
   file: tasks/task-3.md
-  priority: high
-  dependencies:
-  - task-2
-- id: task-4
-  name: Stuckness Detection Algorithm
-  file: tasks/task-4.md
-  priority: high
-  dependencies:
-  - task-2
-- id: task-5
-  name: Feedback Injection via additionalContext
-  file: tasks/task-5.md
-  priority: high
-  dependencies:
-  - task-3
-  - task-4
-- id: task-6
-  name: MCP Tools for Plan Management
-  file: tasks/task-6.md
   priority: medium
   dependencies:
-  - task-0
-  - task-1
+  - task-2
 shared_resources:
   files:
-  - path: packages/claude-plugin/hooks/scripts/graph_db_helper.py
-    reason: Multiple tasks add functions
-    mitigation: Task 0 adds schema first, others add functions sequentially
   - path: packages/claude-plugin/hooks/scripts/track-event.py
-    reason: Tasks 2-5 modify PostToolUse handler
-    mitigation: Sequential execution with clear function boundaries
-  - path: packages/claude-plugin/hooks/hooks.json
-    reason: Task 1 adds TodoWrite matcher
-    mitigation: Single task modifies
-  databases:
-  - name: Memgraph
-    concern: Schema changes during development
-    mitigation: Use MERGE for idempotent operations
+    reason: Tasks 0, 1, 2, 3 all modify this file
+    mitigation: Sequential execution for tasks touching same functions
+  - path: packages/claude-plugin/hooks/scripts/graph_db_helper.py
+    reason: Tasks 0, 3 add new functions
+    mitigation: Add functions at end of file, no conflicts
 testing:
   unit:
-  - Test plan capture from TodoWrite payload
-  - Test step linking logic
-  - Test drift score calculation
-  - Test stuckness detection conditions
+  - Test calculate_feature_alignment() with various feature descriptions
+  - Test Session Work event counting
   integration:
-  - "End-to-end: TodoWrite \u2192 Plan \u2192 Step \u2192 Event \u2192 Feedback"
-  - Verify feedback appears in Claude responses
+  - Verify drift warnings appear in Claude responses
+  - Verify TodoWrite creates Steps
   isolation:
-  - Each task tests independently
-  - Mock Memgraph for unit tests
+  - Each task can be tested independently
 success_criteria:
-- TodoWrite captured as Plan with Step nodes
-- Tool calls linked to active Step
-- Drift detected when actions diverge from plan
-- Stuckness detected after 3-5 min no progress
-- Feedback injected via additionalContext
-- All existing functionality preserved
-notes: "Key insight: Features already serve as the \"Plan\" concept. We're adding\n\
-  Step nodes to make the steps[] array trackable with status and temporal data.\n\n\
-  TodoWrite is currently filtered out as a meta-tool. We'll capture it \nspecifically\
-  \ to extract the agent's plan structure.\n\nDrift detection uses semantic similarity\
-  \ between step description and \ntool call context (file paths, tool type, etc).\n"
+- Drift score recorded on >80% of events
+- Warnings surface when drift >= 0.7
+- Session Work alert when > 20 events unattributed
+- No regression in existing hook performance (<50ms added)
+notes: 'Most code already exists! This plan focuses on:
+
+  1. Wiring existing pieces together
+
+  2. Adding feature-level fallback for when Steps don''t exist
+
+  3. Surfacing warnings that are currently calculated but hidden
+
+  '
 changelog:
-- timestamp: 20251211-143000
-  event: Plan created from research synthesis
+- timestamp: 20251213-143000
+  event: Plan created from ctx:architect design
