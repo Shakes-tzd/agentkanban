@@ -765,26 +765,35 @@ def create_step(
 ) -> str:
     """Create a Step node linked to a Feature."""
     step_id = str(uuid.uuid4())
-    run_write_query("""
-        MATCH (f:Feature {id: $featureId})
-        CREATE (s:Step {
-            id: $stepId,
-            description: $description,
-            status: $status,
-            step_order: $order,
-            expected_tools: $expectedTools,
-            created_at: datetime(),
-            started_at: null,
-            completed_at: null
-        })-[:BELONGS_TO]->(f)
-    """, {
-        "featureId": feature_id,
-        "stepId": step_id,
-        "description": description,
-        "status": status,
-        "order": order,
-        "expectedTools": expected_tools or []
-    })
+    try:
+        results = run_write_query("""
+            MATCH (f:Feature {id: $featureId})
+            CREATE (s:Step {
+                id: $stepId,
+                description: $description,
+                status: $status,
+                step_order: $order,
+                expected_tools: $expectedTools,
+                created_at: datetime(),
+                started_at: null,
+                completed_at: null
+            })-[:BELONGS_TO]->(f)
+            RETURN s
+        """, {
+            "featureId": feature_id,
+            "stepId": step_id,
+            "description": description,
+            "status": status,
+            "order": order,
+            "expectedTools": expected_tools or []
+        })
+        if results:
+            print(f"[DEBUG] Created Step: id={step_id}, desc='{description[:50]}...', status={status}, order={order}, feature_id={feature_id}")
+        else:
+            print(f"[WARN] Step creation query returned empty results: id={step_id}, feature_id={feature_id}")
+    except Exception as e:
+        print(f"[ERROR] Failed to create Step: id={step_id}, feature_id={feature_id}, error={str(e)}")
+        raise
     return step_id
 
 
@@ -828,21 +837,27 @@ def update_step_status(step_id: str, status: str) -> Optional[dict]:
     """Update a step's status. Valid statuses: pending, in_progress, completed, skipped."""
     now_field = "started_at" if status == "in_progress" else "completed_at" if status == "completed" else None
 
-    if now_field:
-        results = run_write_query(f"""
-            MATCH (s:Step {{id: $stepId}})
-            SET s.status = $status,
-                s.{now_field} = datetime()
-            RETURN s
-        """, {"stepId": step_id, "status": status})
-    else:
-        results = run_write_query("""
-            MATCH (s:Step {id: $stepId})
-            SET s.status = $status
-            RETURN s
-        """, {"stepId": step_id, "status": status})
+    try:
+        if now_field:
+            results = run_write_query(f"""
+                MATCH (s:Step {{id: $stepId}})
+                SET s.status = $status,
+                    s.{now_field} = datetime()
+                RETURN s
+            """, {"stepId": step_id, "status": status})
+        else:
+            results = run_write_query("""
+                MATCH (s:Step {id: $stepId})
+                SET s.status = $status
+                RETURN s
+            """, {"stepId": step_id, "status": status})
 
-    return _node_to_dict(results[0], "s") if results else None
+        if results:
+            print(f"[DEBUG] Updated Step status: id={step_id}, status={status}")
+        return _node_to_dict(results[0], "s") if results else None
+    except Exception as e:
+        print(f"[ERROR] Failed to update Step status: id={step_id}, status={status}, error={str(e)}")
+        raise
 
 
 def get_recent_events_for_step(step_id: str, limit: int = 5) -> list[dict]:
@@ -872,8 +887,11 @@ def sync_steps_from_todos(feature_id: str, todos: list) -> list:
     Creates new steps, updates existing, marks removed as skipped.
     Returns list of step IDs.
     """
+    print(f"[DEBUG] sync_steps_from_todos: feature_id={feature_id}, todo_count={len(todos)}")
+
     existing_steps = get_steps(feature_id)
     existing_by_desc = {s.get("description", ""): s for s in existing_steps}
+    print(f"[DEBUG] Found {len(existing_steps)} existing steps for feature {feature_id}")
 
     step_ids = []
     for i, todo in enumerate(todos):
@@ -884,10 +902,12 @@ def sync_steps_from_todos(feature_id: str, todos: list) -> list:
         if desc in existing_by_desc:
             # Update existing step
             step = existing_by_desc[desc]
+            print(f"[DEBUG] Updating existing step {step['id']}: status={status}")
             update_step_status(step["id"], status)
             step_ids.append(step["id"])
         else:
             # Create new step
+            print(f"[DEBUG] Creating new step for todo {i}: desc='{desc[:50]}...', status={status}")
             step_id = create_step(feature_id, desc, i, status)
             step_ids.append(step_id)
 
@@ -895,8 +915,10 @@ def sync_steps_from_todos(feature_id: str, todos: list) -> list:
     current_descs = {todo.get("content", "") for todo in todos}
     for step in existing_steps:
         if step.get("description", "") not in current_descs:
+            print(f"[DEBUG] Marking step {step['id']} as skipped (no longer in todos)")
             update_step_status(step["id"], "skipped")
 
+    print(f"[DEBUG] sync_steps_from_todos completed: created/updated {len(step_ids)} steps for feature {feature_id}")
     return step_ids
 
 
