@@ -53,12 +53,14 @@ plan_app = typer.Typer(help="Plan management commands")
 insight_app = typer.Typer(help="Insight management commands")
 session_app = typer.Typer(help="Session management commands")
 analytics_app = typer.Typer(help="Analytics and insights commands")
+transcript_app = typer.Typer(help="Transcript analysis commands")
 
 app.add_typer(feature_app, name="feature")
 app.add_typer(plan_app, name="plan")
 app.add_typer(insight_app, name="insight")
 app.add_typer(session_app, name="session")
 app.add_typer(analytics_app, name="analytics")
+app.add_typer(transcript_app, name="transcript")
 
 
 # =============================================================================
@@ -1058,6 +1060,231 @@ def analytics_effectiveness(
                     console.print(f"  • {suggestion}")
     finally:
         client.close()
+
+
+# =============================================================================
+# TRANSCRIPT COMMANDS
+# =============================================================================
+
+
+@transcript_app.command("list")
+def transcript_list(
+    project_path: Annotated[Optional[str], typer.Option("--project", "-p", help="Project path (defaults to cwd)")] = None,
+    limit: Annotated[int, typer.Option("--limit", "-l", help="Max sessions to show")] = 10,
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """List transcript sessions for a project."""
+    from .transcript import TranscriptParser
+
+    parser = TranscriptParser(project_path)
+    sessions = parser.list_sessions()[:limit]
+
+    if json_output:
+        output_json({"success": True, "sessions": sessions, "count": len(sessions)})
+        return
+
+    if not sessions:
+        console.print("[yellow]No transcript sessions found.[/yellow]")
+        console.print(f"[dim]Looking in: {parser._transcript_dir}[/dim]")
+        return
+
+    console.print()
+    table = Table(title=f"Transcript Sessions ({len(sessions)})")
+    table.add_column("Session ID", width=36)
+    table.add_column("Size", justify="right", width=10)
+    table.add_column("Modified", width=20)
+
+    for s in sessions:
+        size_kb = s["size_bytes"] / 1024
+        size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb/1024:.1f} MB"
+        modified = s["modified_at"].strftime("%Y-%m-%d %H:%M")
+        table.add_row(s["session_id"], size_str, modified)
+
+    console.print(table)
+
+
+@transcript_app.command("summary")
+def transcript_summary(
+    session_id: Annotated[str, typer.Argument(help="Session ID to summarize")],
+    project_path: Annotated[Optional[str], typer.Option("--project", "-p", help="Project path")] = None,
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """Show summary statistics for a transcript session."""
+    from .transcript import TranscriptParser, get_session_cost_estimate
+
+    parser = TranscriptParser(project_path)
+
+    try:
+        summary = parser.get_session_summary(session_id)
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+    cost_estimate = get_session_cost_estimate(summary)
+
+    if json_output:
+        output_json({
+            "success": True,
+            "summary": summary.model_dump(),
+            "cost_estimate": cost_estimate,
+        })
+        return
+
+    console.print()
+    console.print(Panel(
+        f"[bold]Session:[/bold] {summary.session_id[:8]}...\n"
+        f"[bold]Project:[/bold] {summary.project_path}\n"
+        f"[bold]Duration:[/bold] {summary.duration_minutes or 0:.1f} minutes\n"
+        f"[bold]Branch:[/bold] {', '.join(summary.git_branches) or 'unknown'}",
+        title="Transcript Summary",
+        border_style="blue",
+    ))
+
+    # Message stats
+    console.print()
+    console.print("[bold]Messages:[/bold]")
+    console.print(f"  User messages:      {summary.user_message_count}")
+    console.print(f"  Assistant messages: {summary.assistant_message_count}")
+    console.print(f"  Tool calls:         {summary.tool_call_count}")
+
+    # Token usage
+    console.print()
+    console.print("[bold]Token Usage:[/bold]")
+    console.print(f"  Input tokens:       {summary.total_input_tokens:,}")
+    console.print(f"  Output tokens:      {summary.total_output_tokens:,}")
+    console.print(f"  Cache creation:     {summary.total_cache_creation_tokens:,}")
+    console.print(f"  Cache read:         {summary.total_cache_read_tokens:,}")
+    console.print(f"  [bold]Total:[/bold]             {summary.total_tokens:,}")
+
+    # Cost estimate
+    console.print()
+    console.print("[bold]Estimated Cost:[/bold]")
+    for tier, costs in cost_estimate.items():
+        console.print(f"  {tier.capitalize():8} ${costs['total_cost']:.4f}")
+
+    # Models used
+    if summary.models_used:
+        console.print()
+        console.print("[bold]Models Used:[/bold]")
+        for model in summary.models_used:
+            console.print(f"  • {model}")
+
+    # Top tools
+    if summary.tools_used:
+        console.print()
+        console.print("[bold]Top Tools:[/bold]")
+        for tool, count in list(summary.tools_used.items())[:10]:
+            console.print(f"  {tool:20} {count:>4}x")
+
+
+@transcript_app.command("projects")
+def transcript_projects(
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """List all projects with transcripts."""
+    from .transcript import TranscriptParser
+
+    projects = TranscriptParser.list_all_projects()
+
+    if json_output:
+        output_json({"success": True, "projects": projects, "count": len(projects)})
+        return
+
+    if not projects:
+        console.print("[yellow]No projects with transcripts found.[/yellow]")
+        return
+
+    console.print()
+    table = Table(title=f"Projects with Transcripts ({len(projects)})")
+    table.add_column("Project Path")
+    table.add_column("Sessions", justify="right", width=10)
+
+    for p in sorted(projects, key=lambda x: -x["session_count"]):
+        table.add_row(p["project_path"], str(p["session_count"]))
+
+    console.print(table)
+
+
+@transcript_app.command("cost")
+def transcript_cost(
+    days: Annotated[int, typer.Option("--days", "-d", help="Days to look back")] = 7,
+    project_path: Annotated[Optional[str], typer.Option("--project", "-p", help="Project path")] = None,
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """Show aggregated token usage and cost estimates for recent sessions."""
+    from datetime import datetime as dt, timedelta
+    from .transcript import TranscriptParser, get_session_cost_estimate, TranscriptSummary
+
+    parser = TranscriptParser(project_path)
+    sessions = parser.list_sessions()
+
+    cutoff = dt.now() - timedelta(days=days)
+    recent_sessions = [s for s in sessions if s["modified_at"] >= cutoff]
+
+    if not recent_sessions:
+        console.print(f"[yellow]No sessions in the last {days} days.[/yellow]")
+        return
+
+    # Aggregate stats
+    total = TranscriptSummary(session_id="aggregate", project_path=project_path or "")
+    session_count = 0
+
+    for session_info in recent_sessions:
+        try:
+            summary = parser.get_session_summary(session_info["session_id"])
+            total.total_input_tokens += summary.total_input_tokens
+            total.total_output_tokens += summary.total_output_tokens
+            total.total_cache_creation_tokens += summary.total_cache_creation_tokens
+            total.total_cache_read_tokens += summary.total_cache_read_tokens
+            total.user_message_count += summary.user_message_count
+            total.assistant_message_count += summary.assistant_message_count
+            total.tool_call_count += summary.tool_call_count
+            session_count += 1
+        except Exception:
+            continue
+
+    cost_estimate = get_session_cost_estimate(total)
+
+    if json_output:
+        output_json({
+            "success": True,
+            "days": days,
+            "session_count": session_count,
+            "totals": {
+                "input_tokens": total.total_input_tokens,
+                "output_tokens": total.total_output_tokens,
+                "total_tokens": total.total_tokens,
+                "user_messages": total.user_message_count,
+                "assistant_messages": total.assistant_message_count,
+                "tool_calls": total.tool_call_count,
+            },
+            "cost_estimate": cost_estimate,
+        })
+        return
+
+    console.print()
+    console.print(Panel(
+        f"[bold]Period:[/bold] Last {days} days\n"
+        f"[bold]Sessions:[/bold] {session_count}\n"
+        f"[bold]Project:[/bold] {project_path or 'current directory'}",
+        title="Token Usage Summary",
+        border_style="blue",
+    ))
+
+    console.print()
+    console.print("[bold]Totals:[/bold]")
+    console.print(f"  User messages:      {total.user_message_count:,}")
+    console.print(f"  Assistant messages: {total.assistant_message_count:,}")
+    console.print(f"  Tool calls:         {total.tool_call_count:,}")
+    console.print()
+    console.print(f"  Input tokens:       {total.total_input_tokens:,}")
+    console.print(f"  Output tokens:      {total.total_output_tokens:,}")
+    console.print(f"  [bold]Total tokens:[/bold]      {total.total_tokens:,}")
+
+    console.print()
+    console.print("[bold]Estimated Cost (by model tier):[/bold]")
+    for tier, costs in cost_estimate.items():
+        console.print(f"  {tier.capitalize():8} ${costs['total_cost']:.2f}")
 
 
 # =============================================================================
