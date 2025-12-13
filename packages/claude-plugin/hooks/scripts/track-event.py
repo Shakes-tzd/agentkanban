@@ -531,6 +531,19 @@ def generate_workflow_nudges(
                     nudges.append(warning)
                     db_helper.record_nudge(session_id, nudge_key)
 
+    # 4. Session Work accumulator alert (when >20 events unattributed to real features)
+    try:
+        session_work_count = db_helper.get_session_work_event_count(project_dir, session_id)
+        if session_work_count > 20:
+            if not db_helper.has_been_nudged(session_id, "session_work_accumulator"):
+                nudges.append(
+                    f"Note: {session_work_count} events in this session aren't linked to a feature. "
+                    "Consider using ijoka_create_feature to create a feature for this work."
+                )
+                db_helper.record_nudge(session_id, "session_work_accumulator")
+    except Exception:
+        pass  # Don't fail the hook for nudge errors
+
     return nudges
 
 
