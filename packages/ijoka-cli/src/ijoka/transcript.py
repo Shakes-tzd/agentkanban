@@ -479,3 +479,171 @@ def get_session_cost_estimate(summary: TranscriptSummary) -> dict:
         }
 
     return estimates
+
+
+# =============================================================================
+# GRAPH DATABASE SYNC
+# =============================================================================
+
+
+def sync_transcript_to_graph(
+    parser: TranscriptParser,
+    session_id: str,
+    clear_existing: bool = False
+) -> dict:
+    """
+    Sync a parsed transcript session to Memgraph.
+
+    This bridges the TranscriptParser with the graph database schema,
+    storing entries, tool uses, and aggregates for analytics.
+
+    Args:
+        parser: TranscriptParser instance
+        session_id: Session ID to sync
+        clear_existing: If True, clear existing data before sync
+
+    Returns:
+        Dict with sync statistics
+    """
+    # Import graph helpers (lazy import to avoid circular deps)
+    import sys
+    # Path: transcript.py -> ijoka -> src -> ijoka-cli -> packages -> claude-plugin/hooks/scripts
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "claude-plugin" / "hooks" / "scripts"))
+    try:
+        from graph_db_helper import (
+            create_transcript_session,
+            insert_transcript_entry,
+            clear_transcript_session,
+            is_connected
+        )
+    except ImportError:
+        return {"error": "graph_db_helper not available", "synced": 0}
+
+    if not is_connected():
+        return {"error": "Memgraph not connected", "synced": 0}
+
+    # Get transcript file info
+    sessions = parser.list_sessions()
+    session_info = next((s for s in sessions if s["session_id"] == session_id), None)
+    if not session_info:
+        return {"error": f"Session {session_id} not found", "synced": 0}
+
+    # Clear existing if requested
+    if clear_existing:
+        clear_transcript_session(session_id)
+
+    # Create/update TranscriptSession node
+    create_transcript_session(
+        session_id=session_id,
+        project_dir=parser.project_path,
+        transcript_path=session_info["file_path"],
+        file_modified_at=session_info["modified_at"].isoformat()
+    )
+
+    # Parse and insert entries
+    entry_count = 0
+    tool_count = 0
+    errors = []
+
+    for entry in parser.parse_session(session_id):
+        try:
+            # Prepare tool calls list
+            tool_calls = None
+            if entry.tool_calls:
+                tool_calls = [
+                    {"id": tc.id, "name": tc.name, "input": tc.input}
+                    for tc in entry.tool_calls
+                ]
+                tool_count += len(tool_calls)
+
+            # Get content based on entry type
+            content = entry.user_content if entry.type == "user" else entry.assistant_text
+
+            # Get token usage
+            input_tokens = 0
+            output_tokens = 0
+            cache_creation_tokens = 0
+            cache_read_tokens = 0
+            if entry.token_usage:
+                input_tokens = entry.token_usage.input_tokens
+                output_tokens = entry.token_usage.output_tokens
+                cache_creation_tokens = entry.token_usage.cache_creation_input_tokens
+                cache_read_tokens = entry.token_usage.cache_read_input_tokens
+
+            insert_transcript_entry(
+                session_id=session_id,
+                entry_type=entry.type,
+                timestamp=entry.timestamp.isoformat(),
+                uuid=entry.uuid,
+                parent_uuid=entry.parent_uuid,
+                content=content,
+                model=entry.model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                cache_read_tokens=cache_read_tokens,
+                tool_calls=tool_calls,
+                stop_reason=entry.stop_reason,
+                is_sidechain=entry.is_sidechain
+            )
+            entry_count += 1
+
+        except Exception as e:
+            errors.append(str(e))
+            if len(errors) > 10:
+                break
+
+    return {
+        "session_id": session_id,
+        "entries_synced": entry_count,
+        "tool_uses_synced": tool_count,
+        "errors": errors[:5] if errors else [],
+        "success": len(errors) == 0
+    }
+
+
+def sync_all_transcripts_to_graph(
+    project_path: Optional[str] = None,
+    limit: int = 100,
+    clear_existing: bool = False
+) -> dict:
+    """
+    Sync all transcript sessions to Memgraph.
+
+    Args:
+        project_path: Project directory (defaults to cwd)
+        limit: Maximum sessions to sync
+        clear_existing: If True, clear existing data before sync
+
+    Returns:
+        Dict with overall sync statistics
+    """
+    parser = TranscriptParser(project_path)
+    sessions = parser.list_sessions()[:limit]
+
+    results = {
+        "total_sessions": len(sessions),
+        "synced": 0,
+        "failed": 0,
+        "total_entries": 0,
+        "total_tool_uses": 0,
+        "errors": []
+    }
+
+    for session_info in sessions:
+        result = sync_transcript_to_graph(
+            parser=parser,
+            session_id=session_info["session_id"],
+            clear_existing=clear_existing
+        )
+
+        if result.get("success"):
+            results["synced"] += 1
+            results["total_entries"] += result.get("entries_synced", 0)
+            results["total_tool_uses"] += result.get("tool_uses_synced", 0)
+        else:
+            results["failed"] += 1
+            if result.get("error"):
+                results["errors"].append(f"{session_info['session_id'][:8]}: {result['error']}")
+
+    return results

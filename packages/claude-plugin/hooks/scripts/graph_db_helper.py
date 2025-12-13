@@ -1835,3 +1835,448 @@ def sync_features_from_json(project_dir: str, features: list[dict]) -> None:
                 "workCount": feature.get("workCount", 0),
             }
         )
+
+
+# =============================================================================
+# Transcript Operations
+# =============================================================================
+
+
+def create_transcript_session(
+    session_id: str,
+    project_dir: str,
+    transcript_path: str,
+    file_modified_at: Optional[str] = None
+) -> str:
+    """
+    Create or update a TranscriptSession node.
+
+    Links the transcript file to the Session node if it exists.
+    A TranscriptSession represents the parsed data from a JSONL transcript file.
+    """
+    # Ensure Session exists
+    get_or_create_project(project_dir)
+
+    results = run_write_query(
+        """
+        MATCH (p:Project {path: $projectPath})
+        MERGE (s:Session {id: $sessionId})-[:IN_PROJECT]->(p)
+        ON CREATE SET s.status = 'ended',
+                      s.started_at = datetime(),
+                      s.last_activity = datetime(),
+                      s.event_count = 0
+
+        MERGE (ts:TranscriptSession {id: $sessionId})
+        ON CREATE SET ts.transcript_path = $transcriptPath,
+                      ts.file_modified_at = $fileModifiedAt,
+                      ts.parsed_at = datetime(),
+                      ts.entry_count = 0,
+                      ts.total_input_tokens = 0,
+                      ts.total_output_tokens = 0,
+                      ts.total_cache_creation_tokens = 0,
+                      ts.total_cache_read_tokens = 0
+        ON MATCH SET ts.file_modified_at = $fileModifiedAt,
+                     ts.parsed_at = datetime()
+
+        MERGE (ts)-[:TRANSCRIPT_OF]->(s)
+        RETURN ts.id as id
+        """,
+        {
+            "sessionId": session_id,
+            "projectPath": project_dir,
+            "transcriptPath": transcript_path,
+            "fileModifiedAt": file_modified_at
+        }
+    )
+    return results[0]["id"] if results else session_id
+
+
+def insert_transcript_entry(
+    session_id: str,
+    entry_type: str,
+    timestamp: str,
+    uuid: Optional[str] = None,
+    parent_uuid: Optional[str] = None,
+    content: Optional[str] = None,
+    model: Optional[str] = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    tool_calls: Optional[list[dict]] = None,
+    stop_reason: Optional[str] = None,
+    is_sidechain: bool = False
+) -> str:
+    """
+    Insert a TranscriptEntry node linked to TranscriptSession.
+
+    Args:
+        session_id: The transcript session ID
+        entry_type: 'user', 'assistant', or 'queue-operation'
+        timestamp: ISO timestamp of the entry
+        uuid: Unique ID from transcript
+        parent_uuid: Parent entry UUID (for threading)
+        content: Text content (user message or assistant response)
+        model: Model name (for assistant entries)
+        input_tokens: Input token count
+        output_tokens: Output token count
+        cache_creation_tokens: Cache creation token count
+        cache_read_tokens: Cache read token count
+        tool_calls: List of tool call dicts [{name, id, input}]
+        stop_reason: Stop reason (for assistant entries)
+        is_sidechain: Whether this is a sidechain entry
+    """
+    entry_id = uuid or str(__import__("uuid").uuid4())
+
+    cypher = """
+        MATCH (ts:TranscriptSession {id: $sessionId})
+        CREATE (e:TranscriptEntry {
+            id: $entryId,
+            entry_type: $entryType,
+            timestamp: datetime($timestamp),
+            uuid: $uuid,
+            parent_uuid: $parentUuid,
+            content: $content,
+            model: $model,
+            input_tokens: $inputTokens,
+            output_tokens: $outputTokens,
+            cache_creation_tokens: $cacheCreationTokens,
+            cache_read_tokens: $cacheReadTokens,
+            stop_reason: $stopReason,
+            is_sidechain: $isSidechain,
+            tool_call_count: $toolCallCount
+        })-[:IN_TRANSCRIPT]->(ts)
+
+        // Update aggregates on TranscriptSession
+        SET ts.entry_count = ts.entry_count + 1,
+            ts.total_input_tokens = ts.total_input_tokens + $inputTokens,
+            ts.total_output_tokens = ts.total_output_tokens + $outputTokens,
+            ts.total_cache_creation_tokens = ts.total_cache_creation_tokens + $cacheCreationTokens,
+            ts.total_cache_read_tokens = ts.total_cache_read_tokens + $cacheReadTokens
+
+        RETURN e.id as id
+    """
+
+    params = {
+        "sessionId": session_id,
+        "entryId": entry_id,
+        "entryType": entry_type,
+        "timestamp": timestamp,
+        "uuid": uuid,
+        "parentUuid": parent_uuid,
+        "content": (content[:10000] if content else None),  # Truncate long content
+        "model": model,
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "cacheCreationTokens": cache_creation_tokens,
+        "cacheReadTokens": cache_read_tokens,
+        "stopReason": stop_reason,
+        "isSidechain": is_sidechain,
+        "toolCallCount": len(tool_calls) if tool_calls else 0
+    }
+
+    results = run_write_query(cypher, params)
+
+    # Create tool use nodes if present
+    if tool_calls:
+        for tc in tool_calls:
+            insert_transcript_tool_use(
+                entry_id=entry_id,
+                tool_id=tc.get("id", ""),
+                tool_name=tc.get("name", ""),
+                tool_input=tc.get("input", {})
+            )
+
+    # Link to parent entry if present (conversation threading)
+    if parent_uuid:
+        run_write_query(
+            """
+            MATCH (e:TranscriptEntry {id: $entryId})
+            MATCH (parent:TranscriptEntry {uuid: $parentUuid})
+            MERGE (e)-[:REPLY_TO]->(parent)
+            """,
+            {"entryId": entry_id, "parentUuid": parent_uuid}
+        )
+
+    return entry_id
+
+
+def insert_transcript_tool_use(
+    entry_id: str,
+    tool_id: str,
+    tool_name: str,
+    tool_input: dict
+) -> str:
+    """
+    Insert a TranscriptToolUse node linked to a TranscriptEntry.
+    """
+    use_id = tool_id or str(__import__("uuid").uuid4())
+
+    # Serialize input, truncate if too large
+    input_json = json.dumps(tool_input)
+    if len(input_json) > 5000:
+        input_json = json.dumps({"truncated": True, "preview": str(tool_input)[:500]})
+
+    run_write_query(
+        """
+        MATCH (e:TranscriptEntry {id: $entryId})
+        CREATE (t:TranscriptToolUse {
+            id: $useId,
+            tool_name: $toolName,
+            tool_input: $toolInput
+        })-[:TOOL_IN_ENTRY]->(e)
+        """,
+        {
+            "entryId": entry_id,
+            "useId": use_id,
+            "toolName": tool_name,
+            "toolInput": input_json
+        }
+    )
+    return use_id
+
+
+def get_transcript_session(session_id: str) -> Optional[dict]:
+    """Get a TranscriptSession with aggregate stats."""
+    results = run_query(
+        """
+        MATCH (ts:TranscriptSession {id: $sessionId})
+        OPTIONAL MATCH (ts)-[:TRANSCRIPT_OF]->(s:Session)
+        OPTIONAL MATCH (s)-[:IN_PROJECT]->(p:Project)
+        RETURN ts, s.agent as agent, p.path as project_path
+        """,
+        {"sessionId": session_id}
+    )
+    if not results:
+        return None
+
+    ts = _node_to_dict(results[0], "ts")
+    ts["agent"] = results[0].get("agent")
+    ts["project_path"] = results[0].get("project_path")
+    return ts
+
+
+def get_transcript_entries(
+    session_id: str,
+    entry_type: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+) -> list[dict]:
+    """
+    Get transcript entries for a session.
+
+    Args:
+        session_id: Transcript session ID
+        entry_type: Filter by type (user/assistant/queue-operation)
+        limit: Max entries to return
+        offset: Pagination offset
+    """
+    type_filter = "AND e.entry_type = $entryType" if entry_type else ""
+
+    results = run_query(
+        f"""
+        MATCH (e:TranscriptEntry)-[:IN_TRANSCRIPT]->(ts:TranscriptSession {{id: $sessionId}})
+        WHERE true {type_filter}
+        RETURN e
+        ORDER BY e.timestamp ASC
+        SKIP $offset
+        LIMIT $limit
+        """,
+        {"sessionId": session_id, "entryType": entry_type, "offset": offset, "limit": limit}
+    )
+    return [_node_to_dict(r, "e") for r in results]
+
+
+def get_transcript_tool_uses(session_id: str, tool_name: Optional[str] = None) -> list[dict]:
+    """
+    Get all tool uses from a transcript session.
+
+    Args:
+        session_id: Transcript session ID
+        tool_name: Filter by tool name (optional)
+    """
+    name_filter = "AND t.tool_name = $toolName" if tool_name else ""
+
+    results = run_query(
+        f"""
+        MATCH (t:TranscriptToolUse)-[:TOOL_IN_ENTRY]->(e:TranscriptEntry)-[:IN_TRANSCRIPT]->(ts:TranscriptSession {{id: $sessionId}})
+        WHERE true {name_filter}
+        RETURN t, e.timestamp as timestamp, e.model as model
+        ORDER BY e.timestamp ASC
+        """,
+        {"sessionId": session_id, "toolName": tool_name}
+    )
+
+    tools = []
+    for r in results:
+        t = _node_to_dict(r, "t")
+        t["timestamp"] = str(r.get("timestamp", ""))
+        t["model"] = r.get("model")
+        tools.append(t)
+    return tools
+
+
+def get_transcript_stats(project_dir: str, days: int = 7) -> dict:
+    """
+    Get aggregate transcript statistics for a project.
+
+    Args:
+        project_dir: Project path
+        days: Number of days to look back
+    """
+    duration_str = f"P{days}D"
+
+    results = run_query(
+        """
+        MATCH (ts:TranscriptSession)-[:TRANSCRIPT_OF]->(s:Session)-[:IN_PROJECT]->(p:Project {path: $projectPath})
+        WHERE ts.parsed_at > datetime() - duration($durationStr)
+        WITH count(ts) as session_count,
+             sum(ts.entry_count) as total_entries,
+             sum(ts.total_input_tokens) as total_input,
+             sum(ts.total_output_tokens) as total_output,
+             sum(ts.total_cache_creation_tokens) as total_cache_creation,
+             sum(ts.total_cache_read_tokens) as total_cache_read
+
+        RETURN session_count, total_entries, total_input, total_output,
+               total_cache_creation, total_cache_read
+        """,
+        {"projectPath": project_dir, "durationStr": duration_str}
+    )
+
+    if not results:
+        return {
+            "session_count": 0,
+            "total_entries": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_cache_creation_tokens": 0,
+            "total_cache_read_tokens": 0,
+            "days": days
+        }
+
+    r = results[0]
+    return {
+        "session_count": int(r.get("session_count") or 0),
+        "total_entries": int(r.get("total_entries") or 0),
+        "total_input_tokens": int(r.get("total_input") or 0),
+        "total_output_tokens": int(r.get("total_output") or 0),
+        "total_cache_creation_tokens": int(r.get("total_cache_creation") or 0),
+        "total_cache_read_tokens": int(r.get("total_cache_read") or 0),
+        "days": days
+    }
+
+
+def get_tool_usage_breakdown(project_dir: str, days: int = 7) -> list[dict]:
+    """
+    Get tool usage breakdown from transcripts.
+
+    Returns list of {tool_name, count, avg_per_session} sorted by count.
+    """
+    duration_str = f"P{days}D"
+
+    results = run_query(
+        """
+        MATCH (t:TranscriptToolUse)-[:TOOL_IN_ENTRY]->(e:TranscriptEntry)-[:IN_TRANSCRIPT]->(ts:TranscriptSession)
+        MATCH (ts)-[:TRANSCRIPT_OF]->(s:Session)-[:IN_PROJECT]->(p:Project {path: $projectPath})
+        WHERE ts.parsed_at > datetime() - duration($durationStr)
+        WITH t.tool_name as tool_name, count(t) as count, count(DISTINCT ts) as session_count
+        RETURN tool_name, count, toFloat(count) / session_count as avg_per_session
+        ORDER BY count DESC
+        """,
+        {"projectPath": project_dir, "durationStr": duration_str}
+    )
+
+    return [
+        {
+            "tool_name": r.get("tool_name"),
+            "count": int(r.get("count") or 0),
+            "avg_per_session": round(float(r.get("avg_per_session") or 0), 2)
+        }
+        for r in results
+    ]
+
+
+def get_model_usage_breakdown(project_dir: str, days: int = 7) -> list[dict]:
+    """
+    Get model usage breakdown from transcripts.
+
+    Returns list of {model, message_count, input_tokens, output_tokens}.
+    """
+    duration_str = f"P{days}D"
+
+    results = run_query(
+        """
+        MATCH (e:TranscriptEntry)-[:IN_TRANSCRIPT]->(ts:TranscriptSession)
+        MATCH (ts)-[:TRANSCRIPT_OF]->(s:Session)-[:IN_PROJECT]->(p:Project {path: $projectPath})
+        WHERE ts.parsed_at > datetime() - duration($durationStr)
+        AND e.entry_type = 'assistant'
+        AND e.model IS NOT NULL
+        WITH e.model as model,
+             count(e) as message_count,
+             sum(e.input_tokens) as input_tokens,
+             sum(e.output_tokens) as output_tokens
+        RETURN model, message_count, input_tokens, output_tokens
+        ORDER BY message_count DESC
+        """,
+        {"projectPath": project_dir, "durationStr": duration_str}
+    )
+
+    return [
+        {
+            "model": r.get("model"),
+            "message_count": int(r.get("message_count") or 0),
+            "input_tokens": int(r.get("input_tokens") or 0),
+            "output_tokens": int(r.get("output_tokens") or 0)
+        }
+        for r in results
+    ]
+
+
+def clear_transcript_session(session_id: str) -> int:
+    """
+    Clear all transcript data for a session (for re-parsing).
+
+    Returns count of deleted entries.
+    """
+    # First get count
+    count_result = run_query(
+        """
+        MATCH (e:TranscriptEntry)-[:IN_TRANSCRIPT]->(ts:TranscriptSession {id: $sessionId})
+        RETURN count(e) as count
+        """,
+        {"sessionId": session_id}
+    )
+    count = int(count_result[0].get("count") or 0) if count_result else 0
+
+    # Delete tool uses
+    run_write_query(
+        """
+        MATCH (t:TranscriptToolUse)-[:TOOL_IN_ENTRY]->(e:TranscriptEntry)-[:IN_TRANSCRIPT]->(ts:TranscriptSession {id: $sessionId})
+        DETACH DELETE t
+        """,
+        {"sessionId": session_id}
+    )
+
+    # Delete entries
+    run_write_query(
+        """
+        MATCH (e:TranscriptEntry)-[:IN_TRANSCRIPT]->(ts:TranscriptSession {id: $sessionId})
+        DETACH DELETE e
+        """,
+        {"sessionId": session_id}
+    )
+
+    # Reset aggregates
+    run_write_query(
+        """
+        MATCH (ts:TranscriptSession {id: $sessionId})
+        SET ts.entry_count = 0,
+            ts.total_input_tokens = 0,
+            ts.total_output_tokens = 0,
+            ts.total_cache_creation_tokens = 0,
+            ts.total_cache_read_tokens = 0
+        """,
+        {"sessionId": session_id}
+    )
+
+    return count

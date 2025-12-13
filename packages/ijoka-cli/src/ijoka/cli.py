@@ -1287,6 +1287,71 @@ def transcript_cost(
         console.print(f"  {tier.capitalize():8} ${costs['total_cost']:.2f}")
 
 
+@transcript_app.command("sync")
+def transcript_sync(
+    session_id: Annotated[Optional[str], typer.Argument(help="Specific session to sync (syncs all if not provided)")] = None,
+    project_path: Annotated[Optional[str], typer.Option("--project", "-p", help="Project path")] = None,
+    limit: Annotated[int, typer.Option("--limit", "-l", help="Max sessions to sync")] = 50,
+    clear: Annotated[bool, typer.Option("--clear", "-c", help="Clear existing data before sync")] = False,
+    json_output: Annotated[bool, typer.Option("--json", "-j", help="Output as JSON")] = False,
+):
+    """Sync transcript data to Memgraph for analytics."""
+    from .transcript import (
+        TranscriptParser,
+        sync_transcript_to_graph,
+        sync_all_transcripts_to_graph
+    )
+
+    if session_id:
+        # Sync single session
+        parser = TranscriptParser(project_path)
+        result = sync_transcript_to_graph(
+            parser=parser,
+            session_id=session_id,
+            clear_existing=clear
+        )
+
+        if json_output:
+            output_json(result)
+            return
+
+        if result.get("error"):
+            console.print(f"[red]Error:[/red] {result['error']}")
+            raise typer.Exit(1)
+
+        console.print(f"[green]✓[/green] Synced session {session_id[:12]}...")
+        console.print(f"  Entries: {result['entries_synced']}")
+        console.print(f"  Tool uses: {result['tool_uses_synced']}")
+        if result.get("errors"):
+            console.print(f"  [yellow]Errors:[/yellow] {len(result['errors'])}")
+    else:
+        # Sync all sessions
+        result = sync_all_transcripts_to_graph(
+            project_path=project_path,
+            limit=limit,
+            clear_existing=clear
+        )
+
+        if json_output:
+            output_json(result)
+            return
+
+        console.print(Panel(
+            f"[bold]Sessions:[/bold] {result['synced']}/{result['total_sessions']} synced\n"
+            f"[bold]Entries:[/bold] {result['total_entries']:,}\n"
+            f"[bold]Tool Uses:[/bold] {result['total_tool_uses']:,}\n"
+            f"[bold]Failed:[/bold] {result['failed']}",
+            title="Transcript Sync Results",
+            border_style="green" if result['failed'] == 0 else "yellow",
+        ))
+
+        if result.get("errors"):
+            console.print()
+            console.print("[yellow]Errors:[/yellow]")
+            for err in result["errors"][:5]:
+                console.print(f"  - {err}")
+
+
 # =============================================================================
 # HELP COMMAND
 # =============================================================================
