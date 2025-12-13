@@ -379,7 +379,10 @@ def handle_todowrite(hook_input: dict, project_dir: str, session_id: str) -> lis
     tool_input = hook_input.get("tool_input", {})
     todos = tool_input.get("todos", [])
 
+    print(f"[DEBUG] handle_todowrite: received {len(todos)} todos")
+
     if not todos:
+        print(f"[DEBUG] handle_todowrite: no todos provided, skipping")
         return []
 
     # Get active feature
@@ -387,12 +390,24 @@ def handle_todowrite(hook_input: dict, project_dir: str, session_id: str) -> lis
     if not active_feature:
         # No active feature - could auto-create one from todos
         # For now, just skip
+        print(f"[DEBUG] handle_todowrite: no active feature found, skipping")
         return []
 
     feature_id = active_feature["id"]
+    print(f"[DEBUG] handle_todowrite: syncing todos to feature {feature_id}")
 
     # Sync todos to Steps
     step_ids = db_helper.sync_steps_from_todos(feature_id, todos)
+    print(f"[DEBUG] handle_todowrite: sync_steps_from_todos returned {len(step_ids)} step IDs: {step_ids}")
+
+    # Verify Steps were created by querying the database
+    try:
+        created_steps = db_helper.get_steps(feature_id)
+        print(f"[DEBUG] handle_todowrite: verification - found {len(created_steps)} total steps in database for feature {feature_id}")
+        for step in created_steps:
+            print(f"[DEBUG]   Step: id={step.get('id')}, desc='{step.get('description', '')[:50]}...', status={step.get('status')}")
+    except Exception as e:
+        print(f"[ERROR] handle_todowrite: verification failed - {str(e)}")
 
     # Record PlanUpdate event
     payload = {
