@@ -26,15 +26,14 @@ class PatternDetector:
     def detect_feature_clusters(self) -> list[FeatureCluster]:
         """Group features by category and completion patterns."""
         with self.client.session() as session:
+            # First get clusters by category
             result = session.run("""
                 MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $path})
                 WITH f.category as category, collect(f) as features
                 WHERE size(features) > 1
                 RETURN category,
                        [feat IN features | feat.id] as feature_ids,
-                       size(features) as count,
-                       avg([feat IN features WHERE feat.completed_at IS NOT NULL |
-                           duration.between(feat.created_at, feat.completed_at).hours][0]) as avg_hours
+                       size(features) as count
                 ORDER BY count DESC
             """, path=self.client._project_path)
 
@@ -43,14 +42,13 @@ class PatternDetector:
                 category = record["category"]
                 feature_ids = record["feature_ids"]
                 count = record["count"]
-                avg_hours = record.get("avg_hours")
 
                 clusters.append(FeatureCluster(
                     id=str(uuid.uuid4()),
                     name=f"{category} features",
                     feature_ids=feature_ids,
                     common_category=FeatureCategory(category) if category else None,
-                    avg_completion_time=float(avg_hours) if avg_hours else None,
+                    avg_completion_time=None,  # Calculated separately if needed
                     size=count
                 ))
 
@@ -283,32 +281,50 @@ class AgentProfiler:
     def build_profile(self, agent_id: str) -> AgentProfile:
         """Build comprehensive profile for an agent."""
         with self.client.session() as session:
+            # Get features assigned to agent (without duration calculation in Cypher)
             result = session.run("""
                 MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $path})
                 WHERE f.assigned_agent = $agent OR f.claiming_agent = $agent
-                WITH f,
-                     CASE WHEN f.status = 'complete' THEN 1 ELSE 0 END as completed,
-                     CASE WHEN f.completed_at IS NOT NULL AND f.created_at IS NOT NULL
-                          THEN duration.between(f.created_at, f.completed_at).hours
-                          ELSE null END as hours
-                RETURN count(f) as total,
-                       sum(completed) as completed_count,
-                       collect(DISTINCT f.category) as categories,
-                       avg(hours) as avg_hours
+                RETURN f.status as status,
+                       f.category as category,
+                       f.created_at as created_at,
+                       f.completed_at as completed_at
             """, path=self.client._project_path, agent=agent_id)
 
-            record = result.single()
-            if not record or record["total"] == 0:
+            records = list(result)
+            if not records:
                 return AgentProfile(agent_id=agent_id)
 
-            total = record["total"]
-            completed = record["completed_count"]
-            categories = record["categories"]
-            avg_hours = record.get("avg_hours")
+            total = len(records)
+            completed = 0
+            categories = set()
+            completion_times = []
+
+            for r in records:
+                if r["status"] == "complete":
+                    completed += 1
+                if r["category"]:
+                    categories.add(r["category"])
+
+                # Calculate completion time in Python
+                created = r.get("created_at")
+                completed_at = r.get("completed_at")
+                if created and completed_at:
+                    try:
+                        if hasattr(created, 'to_native'):
+                            created = created.to_native()
+                        if hasattr(completed_at, 'to_native'):
+                            completed_at = completed_at.to_native()
+                        hours = (completed_at - created).total_seconds() / 3600
+                        completion_times.append(hours)
+                    except Exception:
+                        pass
+
+            avg_hours = sum(completion_times) / len(completion_times) if completion_times else None
 
             # Convert categories to enum values
             preferred_categories = []
-            for cat in categories[:5]:  # Top 5
+            for cat in list(categories)[:5]:  # Top 5
                 try:
                     preferred_categories.append(FeatureCategory(cat))
                 except ValueError:
@@ -318,7 +334,7 @@ class AgentProfiler:
                 agent_id=agent_id,
                 total_features=total,
                 completed_features=completed,
-                avg_completion_time=float(avg_hours) if avg_hours else None,
+                avg_completion_time=avg_hours,
                 preferred_categories=preferred_categories,
                 success_rate=completed / total if total > 0 else None
             )
