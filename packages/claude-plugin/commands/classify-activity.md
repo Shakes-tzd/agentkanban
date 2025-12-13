@@ -28,11 +28,13 @@ Task tool parameters:
 - prompt: |
     You are a feature classifier for the Ijoka observability system.
 
+    IMPORTANT: Use ONLY ijoka_* MCP tools for all operations. Never call Python scripts directly.
+
     Your task:
     1. Call `ijoka_status` to get all features for this project
-    2. Query the graph database for recent unlinked events:
-       - Use graph_db_helper.py or the MCP server
-       - Look for events where LINKED_TO relationship doesn't exist
+    2. Query for recent unlinked events using MCP tools:
+       - Use `ijoka_status` with include_unlinked_events: true (if supported)
+       - Or use available MCP query tools
     3. For each unlinked event, analyze:
        - tool_name: What tool was used (Edit, Write, Bash, etc.)
        - payload: File paths, commands, patterns

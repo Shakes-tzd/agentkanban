@@ -130,11 +130,20 @@ Claude:
 6. **Leave code in working state** at session end
 7. **Commit frequently** - Use `ijoka_checkpoint` to track progress
 
-## MCP Tools Available
+## MCP Tools (REQUIRED Interface)
+
+**CRITICAL: ALWAYS use `ijoka_*` MCP tools for ALL Ijoka operations.**
+
+Never bypass MCP by:
+- Calling Python scripts directly (e.g., `uv run graph_db_helper.py`)
+- Running database queries directly
+- Using internal APIs
+
+MCP tools provide validation, audit trails, StatusEvents, and work across all AI clients (Claude Code, Cursor, Windsurf, Gemini, Codex, etc).
 
 | Tool | Purpose |
 |------|---------|
-| `ijoka_status` | Get project status, active feature, progress |
+| `ijoka_status` | Get project status, active features, progress |
 | `ijoka_start_feature` | Start working on a feature |
 | `ijoka_complete_feature` | Mark feature as complete |
 | `ijoka_block_feature` | Report a blocker |
