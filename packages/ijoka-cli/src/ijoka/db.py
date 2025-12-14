@@ -330,6 +330,7 @@ class IjokaClient:
         branch_hint: Optional[str] = None,
         file_patterns: Optional[list[str]] = None,
         work_item_type: str = "feature",
+        parent_id: Optional[str] = None,
     ) -> Feature:
         """Create a new feature."""
         self.ensure_project()
@@ -350,6 +351,7 @@ class IjokaClient:
                     branch_hint: $branch_hint,
                     file_patterns: $file_patterns,
                     work_count: 0,
+                    parent_id: $parent_id,
                     created_at: datetime(),
                     updated_at: datetime()
                 })-[:BELONGS_TO]->(p)
@@ -364,7 +366,21 @@ class IjokaClient:
                 steps=steps or [],
                 branch_hint=branch_hint,
                 file_patterns=file_patterns or [],
+                parent_id=parent_id,
             )
+
+            # Create CHILD_OF relationship if parent specified
+            if parent_id:
+                session.run(
+                    """
+                    MATCH (child:Feature {id: $child_id})
+                    MATCH (parent:Feature {id: $parent_id})
+                    CREATE (child)-[:CHILD_OF]->(parent)
+                    """,
+                    child_id=feature_id,
+                    parent_id=parent_id,
+                )
+
             return self._node_to_feature(result.single()["f"])
 
     def start_feature(
@@ -890,14 +906,15 @@ class IjokaClient:
         with self.session(mode="WRITE") as session:
             # Build SET clause based on status
             set_clause = "s.status = $status, s.updated_at = datetime()"
-            if status == "complete":
+            if status in ("complete", "completed"):
                 set_clause += ", s.completed_at = datetime()"
 
             result = session.run(
                 f"""
                 MATCH (s:Step {{id: $id}})
+                OPTIONAL MATCH (s)-[:BELONGS_TO]->(f:Feature)
                 SET {set_clause}
-                RETURN s
+                RETURN s, f.id as feature_id
                 """,
                 id=step_id,
                 status=status,
@@ -907,12 +924,14 @@ class IjokaClient:
                 raise ValueError(f"Step not found: {step_id}")
 
             node = record["s"]
+            # Get feature_id from relationship or node property
+            feature_id = record.get("feature_id") or node.get("feature_id") or ""
             return Step(
                 id=node["id"],
-                feature_id=node["feature_id"],
+                feature_id=feature_id,
                 description=node["description"],
                 status=StepStatus(node["status"]),
-                step_order=int(node["step_order"]),
+                step_order=int(node.get("step_order", 0)),
                 created_at=self._parse_datetime(node.get("created_at")),
                 updated_at=self._parse_datetime(node.get("updated_at")),
                 completed_at=self._parse_datetime(node.get("completed_at")),
@@ -1059,6 +1078,7 @@ class IjokaClient:
             claiming_agent=node.get("claiming_agent"),
             claimed_at=self._parse_datetime(node.get("claimed_at")),
             block_reason=node.get("block_reason"),
+            parent_id=node.get("parent_id"),
             branch_hint=node.get("branch_hint"),
             file_patterns=list(node.get("file_patterns", [])),
             created_at=self._parse_datetime(node.get("created_at")),

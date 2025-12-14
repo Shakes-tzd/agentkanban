@@ -103,6 +103,9 @@ class Feature(BaseModel):
     # Blocking
     block_reason: Optional[str] = None
 
+    # Hierarchy
+    parent_id: Optional[str] = None  # ID of parent feature (for hierarchy)
+
     # Branch affinity
     branch_hint: Optional[str] = None
     file_patterns: list[str] = Field(default_factory=list)
