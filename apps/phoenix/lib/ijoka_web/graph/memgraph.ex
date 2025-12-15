@@ -81,7 +81,7 @@ defmodule IjokaWeb.Graph.Memgraph do
     MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $project_path})
     OPTIONAL MATCH (f)-[:CHILD_OF]->(parent:Feature)
     RETURN f.id as id, f.description as description, f.category as category,
-           f.passes as passes, f.in_progress as in_progress, f.agent as agent,
+           f.status as status, f.agent as agent,
            f.work_count as work_count, f.priority as priority, f.type as type,
            f.parent_id as parent_id, parent.description as parent_description
     ORDER BY f.priority DESC, f.created_at DESC
@@ -91,13 +91,14 @@ defmodule IjokaWeb.Graph.Memgraph do
       {:ok, results} ->
         features =
           Enum.map(results, fn row ->
+            status = row["status"] || "pending"
             %{
               id: row["id"],
               description: row["description"],
               category: row["category"],
-              status: determine_status(row),
-              passes: row["passes"] || false,
-              in_progress: row["in_progress"] || false,
+              status: status,
+              passes: status == "complete",
+              in_progress: status == "in_progress",
               agent: row["agent"],
               work_count: row["work_count"] || 0,
               priority: row["priority"] || 100,
@@ -120,7 +121,7 @@ defmodule IjokaWeb.Graph.Memgraph do
   def get_active_feature(project_path) do
     cypher = """
     MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $project_path})
-    WHERE f.in_progress = true
+    WHERE f.status = 'in_progress'
     RETURN f.id as id, f.description as description, f.category as category, f.agent as agent
     LIMIT 1
     """
@@ -185,9 +186,9 @@ defmodule IjokaWeb.Graph.Memgraph do
     MATCH (f:Feature)-[:BELONGS_TO]->(p:Project {path: $project_path})
     RETURN
       count(f) as total,
-      sum(CASE WHEN f.passes = true THEN 1 ELSE 0 END) as completed,
-      sum(CASE WHEN f.in_progress = true THEN 1 ELSE 0 END) as in_progress,
-      sum(CASE WHEN coalesce(f.passes, false) = false AND coalesce(f.in_progress, false) = false THEN 1 ELSE 0 END) as pending
+      sum(CASE WHEN f.status = 'complete' THEN 1 ELSE 0 END) as completed,
+      sum(CASE WHEN f.status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
+      sum(CASE WHEN f.status = 'pending' OR f.status IS NULL THEN 1 ELSE 0 END) as pending
     """
 
     case query(cypher, %{project_path: project_path}) do
@@ -384,15 +385,6 @@ defmodule IjokaWeb.Graph.Memgraph do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  # Helper to determine feature status from properties
-  defp determine_status(props) do
-    cond do
-      props["passes"] == true -> "completed"
-      props["in_progress"] == true -> "in_progress"
-      true -> "pending"
     end
   end
 end
