@@ -21,6 +21,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 import graph_db_helper as db_helper
 from git_utils import resolve_project_path
 
+# Import semantic analyzer for intelligent signal detection
+try:
+    from semantic_analyzer import get_session_logical_units, clear_logical_units
+    SEMANTIC_AVAILABLE = True
+except ImportError:
+    SEMANTIC_AVAILABLE = False
+
 
 # =============================================================================
 # TRANSCRIPT PARSING (inline to avoid external dependencies)
@@ -146,8 +153,9 @@ def sync_transcript_to_graph(
 ) -> dict:
     """
     Parse and sync a transcript to Memgraph.
+    REFINED: Also detects patterns and auto-creates work items using semantic_analyzer.
 
-    Returns dict with sync statistics.
+    Returns dict with sync statistics and auto-created items.
     """
     path = Path(transcript_path)
     if not path.exists():
@@ -195,13 +203,165 @@ def sync_transcript_to_graph(
             if len(errors) > 10:
                 break
 
+    # After syncing transcript, detect patterns and auto-create work items
+    active_feature = db_helper.get_active_feature(project_dir)
+    active_feature_id = active_feature.get("id") if active_feature else None
+
+    work_items_created = detect_and_create_work_items(
+        session_id=session_id,
+        project_dir=project_dir,
+        active_feature_id=active_feature_id
+    )
+
     return {
         "session_id": session_id,
         "entries_synced": entry_count,
         "tool_uses_synced": tool_count,
         "errors": errors[:5] if errors else [],
-        "success": len(errors) == 0
+        "success": len(errors) == 0,
+        "auto_created": work_items_created  # NEW: Report created items
     }
+
+
+# =============================================================================
+# SIGNAL DETECTION (uses semantic_analyzer classifications)
+# =============================================================================
+
+
+def detect_and_create_work_items(
+    session_id: str,
+    project_dir: str,
+    active_feature_id: Optional[str] = None
+) -> dict:
+    """
+    Analyze semantic_analyzer's Haiku classifications and auto-create work items.
+
+    Uses existing logical_units classified during the session (no re-analysis).
+
+    Returns:
+        dict with auto-created items (bugs, spikes, features) or skip reason
+    """
+    if not SEMANTIC_AVAILABLE:
+        return {"skipped": True, "reason": "semantic_analyzer not available"}
+
+    created = {"bugs": [], "spikes": [], "features": []}
+
+    # Get logical units classified by Haiku during the session
+    logical_units = get_session_logical_units()
+
+    if not logical_units:
+        return {"skipped": True, "reason": "no logical units in session"}
+
+    # Count by semantic type (already classified by Haiku!)
+    type_counts = {}
+    type_summaries = {}
+    for unit in logical_units:
+        t = unit.get("type", "unknown")
+        type_counts[t] = type_counts.get(t, 0) + 1
+        type_summaries.setdefault(t, []).append(unit.get("summary", ""))
+
+    # Decision: Auto-create work items based on patterns
+    # These thresholds prevent noise from single occurrences
+
+    # 1. Multiple bugfixes in session -> Create consolidated bug
+    bugfix_count = type_counts.get("bugfix", 0)
+    if bugfix_count >= 2:
+        summaries = type_summaries.get("bugfix", [])[:3]
+        bug_desc = f"Bugs fixed in session: {'; '.join(summaries)}"
+
+        try:
+            # Query active feature if not provided
+            if not active_feature_id:
+                active_feature = db_helper.get_active_feature(project_dir)
+                active_feature_id = active_feature.get("id") if active_feature else None
+
+            # Create bug via database
+            bug_id = db_helper.create_feature(
+                description=bug_desc,
+                category="functional",
+                feature_type="bug",
+                priority=70,
+                project_dir=project_dir
+            )
+
+            # Link to active feature as parent
+            if active_feature_id and bug_id:
+                db_helper.link_features(bug_id, active_feature_id)
+
+            created["bugs"].append({
+                "id": bug_id,
+                "description": bug_desc,
+                "parent_id": active_feature_id,
+                "count": bugfix_count
+            })
+        except Exception:
+            pass  # Don't fail hook for creation errors
+
+    # 2. Schema changes -> Create feature for tracking
+    schema_count = type_counts.get("schema_change", 0)
+    if schema_count >= 1:
+        summaries = type_summaries.get("schema_change", [])[:2]
+        schema_desc = f"Schema changes: {'; '.join(summaries)}"
+
+        try:
+            if not active_feature_id:
+                active_feature = db_helper.get_active_feature(project_dir)
+                active_feature_id = active_feature.get("id") if active_feature else None
+
+            # Create feature via database
+            feature_id = db_helper.create_feature(
+                description=schema_desc,
+                category="functional",
+                feature_type="feature",
+                priority=80,  # High priority - schema changes need attention
+                project_dir=project_dir
+            )
+
+            if active_feature_id and feature_id:
+                db_helper.link_features(feature_id, active_feature_id)
+
+            created["features"].append({
+                "id": feature_id,
+                "description": schema_desc,
+                "parent_id": active_feature_id,
+                "count": schema_count
+            })
+        except Exception:
+            pass
+
+    # 3. Lots of refactoring without clear feature -> Create spike
+    # (suggests exploration/investigation happening)
+    refactor_count = type_counts.get("refactor", 0)
+    unknown_count = type_counts.get("unknown", 0)
+    if refactor_count >= 3 or unknown_count >= 5:
+        spike_desc = f"Investigation: {refactor_count} refactors, {unknown_count} unclassified changes"
+
+        try:
+            # Create spike via database
+            spike_id = db_helper.create_feature(
+                description=spike_desc,
+                category="planning",
+                feature_type="spike",
+                priority=40,
+                project_dir=project_dir
+            )
+
+            created["spikes"].append({
+                "id": spike_id,
+                "description": spike_desc,
+                "refactor_count": refactor_count,
+                "unknown_count": unknown_count
+            })
+        except Exception:
+            pass
+
+    # Clear logical units after processing (so next session starts fresh)
+    try:
+        clear_logical_units()
+    except Exception:
+        pass
+
+    return created
 
 
 # =============================================================================
@@ -266,6 +426,29 @@ def main():
         }
         if transcript_result.get("errors"):
             response["hookSpecificOutput"]["transcript"]["errors"] = len(transcript_result["errors"])
+
+        # Report auto-created work items from signal detection
+        auto_created = transcript_result.get("auto_created", {})
+        if auto_created and not auto_created.get("skipped"):
+            bugs = auto_created.get("bugs", [])
+            spikes = auto_created.get("spikes", [])
+            features = auto_created.get("features", [])
+
+            if bugs or spikes or features:
+                created_summary = []
+                if bugs:
+                    created_summary.append(f"{len(bugs)} bug(s)")
+                if spikes:
+                    created_summary.append(f"{len(spikes)} spike(s)")
+                if features:
+                    created_summary.append(f"{len(features)} feature(s)")
+
+                response["hookSpecificOutput"]["autoCreated"] = {
+                    "summary": f"Auto-created: {', '.join(created_summary)}",
+                    "bugs": bugs,
+                    "spikes": spikes,
+                    "features": features
+                }
 
     print(json.dumps(response))
 
