@@ -271,6 +271,122 @@ defmodule IjokaWeb.Graph.Memgraph do
     end
   end
 
+  @doc """
+  Get all steps for a feature from Step nodes.
+  Returns steps with status tracking (pending, in_progress, completed, skipped).
+  """
+  def get_feature_steps(feature_id) do
+    cypher = """
+    MATCH (s:Step)-[:BELONGS_TO]->(f:Feature {id: $feature_id})
+    RETURN s.id as id, s.description as description, s.status as status,
+           s.step_order as step_order, toString(s.completed_at) as completed_at
+    ORDER BY s.step_order ASC
+    """
+
+    case query(cypher, %{feature_id: feature_id}) do
+      {:ok, results} ->
+        steps =
+          Enum.map(results, fn row ->
+            %{
+              id: row["id"],
+              description: row["description"],
+              status: row["status"] || "pending",
+              step_order: row["step_order"] || 0,
+              completed_at: row["completed_at"],
+              completed: row["status"] == "completed"
+            }
+          end)
+
+        {:ok, steps}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Toggle a step's status between pending and completed.
+  """
+  def toggle_step_status(step_id) do
+    get_cypher = """
+    MATCH (s:Step {id: $step_id})
+    RETURN s.status as status
+    """
+
+    case query(get_cypher, %{step_id: step_id}) do
+      {:ok, [row | _]} ->
+        current_status = row["status"] || "pending"
+        new_status = if current_status == "completed", do: "pending", else: "completed"
+
+        update_cypher =
+          if new_status == "completed" do
+            """
+            MATCH (s:Step {id: $step_id})
+            SET s.status = $new_status, s.completed_at = datetime()
+            RETURN s.id as id, s.status as status
+            """
+          else
+            """
+            MATCH (s:Step {id: $step_id})
+            SET s.status = $new_status, s.completed_at = null
+            RETURN s.id as id, s.status as status
+            """
+          end
+
+        case query(update_cypher, %{step_id: step_id, new_status: new_status}) do
+          {:ok, [updated | _]} ->
+            {:ok, %{id: updated["id"], status: updated["status"]}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:ok, []} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Get events linked to a specific feature.
+  """
+  def get_feature_events(feature_id, limit \\ 50) do
+    cypher = """
+    MATCH (e:Event)-[:LINKED_TO]->(f:Feature {id: $feature_id})
+    OPTIONAL MATCH (e)-[:TRIGGERED_BY]->(s:Session)
+    RETURN e.id as id, e.event_type as event_type,
+           coalesce(s.agent, e.source_agent) as source_agent,
+           coalesce(s.id, e.session_id) as session_id,
+           e.tool_name as tool_name, e.payload as payload,
+           toString(coalesce(e.timestamp, e.created_at)) as created_at
+    ORDER BY created_at DESC
+    LIMIT $limit
+    """
+
+    case query(cypher, %{feature_id: feature_id, limit: limit}) do
+      {:ok, results} ->
+        events =
+          Enum.map(results, fn row ->
+            %{
+              id: row["id"],
+              event_type: row["event_type"],
+              source_agent: row["source_agent"],
+              session_id: row["session_id"],
+              tool_name: row["tool_name"],
+              payload: row["payload"],
+              created_at: row["created_at"]
+            }
+          end)
+
+        {:ok, events}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   # Helper to determine feature status from properties
   defp determine_status(props) do
     cond do

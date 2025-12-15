@@ -1693,3 +1693,156 @@ body.ijoka-app {
   background: var(--bg-tertiary);
   border-color: var(--border-hover);
 }
+
+/* Steps section in modal */
+.modal-steps-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.modal-steps-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 12px 0;
+}
+
+.steps-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--accent-green);
+}
+
+.steps-count-badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.modal-steps-list {
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  list-style: none;
+}
+
+.modal-step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color);
+  line-height: 1.4;
+}
+
+.modal-step-item:last-child {
+  border-bottom: none;
+}
+
+.step-checkbox {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-color);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+
+.step-checkbox:hover {
+  border-color: var(--accent-green);
+  background: rgba(52, 211, 153, 0.1);
+}
+
+.step-checkbox.checked {
+  background: var(--accent-green);
+  border-color: var(--accent-green);
+}
+
+.step-checkbox .check-icon {
+  width: 12px;
+  height: 12px;
+  color: white;
+}
+
+.step-text {
+  flex: 1;
+  padding-top: 1px;
+}
+
+.modal-step-item.step-completed .step-text {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+/* Events section in modal */
+.modal-events-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.modal-events-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 12px 0;
+}
+
+.events-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--accent-blue);
+}
+
+.events-count-badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+
+.modal-events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.modal-event-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.event-tool {
+  color: var(--text-primary);
+  font-family: monospace;
+}
+
+.event-time {
+  color: var(--text-muted);
+  font-family: monospace;
+}

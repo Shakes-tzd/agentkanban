@@ -75,6 +75,8 @@ defmodule IjokaWebWeb.DashboardLive do
       |> assign(:activity_panel_open, true)
       |> assign(:collapsed_sessions, MapSet.new())
       |> assign(:selected_feature, nil)
+      |> assign(:selected_feature_events, [])
+      |> assign(:selected_feature_steps, [])
       |> assign(:selected_event, nil)
       |> stream(:events, events_with_id, at: 0)
       |> stream(:features_pending, filter_by_status(features, :pending), at: -1)
@@ -167,13 +169,48 @@ defmodule IjokaWebWeb.DashboardLive do
   end
 
   def handle_event("open_feature", %{"id" => feature_id}, socket) do
-    # Find the feature from streams - we need to search all status streams
+    # Find the feature from streams
     feature = find_feature_by_id(socket, feature_id)
-    {:noreply, assign(socket, :selected_feature, feature)}
+
+    # Fetch events linked to this feature
+    feature_events = case Memgraph.get_feature_events(feature_id, 50) do
+      {:ok, events} -> events
+      {:error, _} -> []
+    end
+
+    # Fetch Step nodes for this feature (with status tracking)
+    step_nodes = case Memgraph.get_feature_steps(feature_id) do
+      {:ok, steps} -> steps
+      {:error, _} -> []
+    end
+
+    socket =
+      socket
+      |> assign(:selected_feature, feature)
+      |> assign(:selected_feature_events, feature_events)
+      |> assign(:selected_feature_steps, step_nodes)
+
+    {:noreply, socket}
   end
 
   def handle_event("close_modal", _, socket) do
     {:noreply, assign(socket, :selected_feature, nil)}
+  end
+
+  def handle_event("toggle_step", %{"step-id" => step_id}, socket) do
+    case Memgraph.toggle_step_status(step_id) do
+      {:ok, _updated} ->
+        # Reload step nodes after toggle
+        feature_id = socket.assigns.selected_feature.id
+        step_nodes = case Memgraph.get_feature_steps(feature_id) do
+          {:ok, steps} -> steps
+          {:error, _} -> socket.assigns[:selected_feature_steps] || []
+        end
+        {:noreply, assign(socket, :selected_feature_steps, step_nodes)}
+
+      {:error, _reason} ->
+        {:noreply, socket}
+    end
   end
 
   def handle_event("open_event", %{"id" => event_id}, socket) do
@@ -508,7 +545,7 @@ defmodule IjokaWebWeb.DashboardLive do
       </main>
 
       <!-- Feature Modal -->
-      <.feature_modal :if={@selected_feature} feature={@selected_feature} />
+      <.feature_modal :if={@selected_feature} feature={@selected_feature} events={@selected_feature_events} step_nodes={@selected_feature_steps} />
 
       <!-- Event Detail Modal -->
       <.event_detail_modal :if={@selected_event} event={@selected_event} />
@@ -550,11 +587,55 @@ defmodule IjokaWebWeb.DashboardLive do
             </div>
             <div class="detail-row">
               <span class="detail-label">Work Count</span>
-              <span class="detail-value">{@feature.work_count || 0} actions</span>
+              <span class="detail-value">{@feature.work_count || length(@events)} actions</span>
             </div>
             <div class="detail-row">
               <span class="detail-label">ID</span>
               <span class="detail-value detail-id">{@feature.id}</span>
+            </div>
+          </div>
+
+          <!-- Steps Section -->
+          <div :if={length(@step_nodes) > 0} class="modal-steps-section">
+            <h3 class="modal-steps-header">
+              <svg class="steps-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 11l3 3L22 4" />
+                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+              </svg>
+              Steps
+              <span class="steps-count-badge">{Enum.count(@step_nodes, & &1.completed)}/{length(@step_nodes)}</span>
+            </h3>
+            <ol class="modal-steps-list">
+              <li :for={step <- @step_nodes} class={"modal-step-item #{if step.completed, do: "step-completed", else: ""}"}>
+                <button
+                  type="button"
+                  class={"step-checkbox #{if step.completed, do: "checked", else: ""}"}
+                  phx-click="toggle_step"
+                  phx-value-step-id={step.id}
+                >
+                  <svg :if={step.completed} class="check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                </button>
+                <span class="step-text">{step.description}</span>
+              </li>
+            </ol>
+          </div>
+
+          <!-- Activity History Section -->
+          <div :if={length(@events) > 0} class="modal-events-section">
+            <h3 class="modal-events-header">
+              <svg class="events-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="22,12 18,12 15,21 9,3 6,12 2,12" />
+              </svg>
+              Activity History
+              <span class="events-count-badge">{length(@events)}</span>
+            </h3>
+            <div class="modal-events-list">
+              <div :for={event <- Enum.take(@events, 20)} class="modal-event-item">
+                <span class="event-tool">{event.tool_name || event.event_type}</span>
+                <span class="event-time">{format_event_time(event.created_at)}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -1380,6 +1461,18 @@ defmodule IjokaWebWeb.DashboardLive do
       _ -> "--"
     end
   end
+
+  defp format_event_time(nil), do: ""
+  defp format_event_time(time_str) when is_binary(time_str) do
+    case parse_datetime(time_str) do
+      nil -> ""
+      dt ->
+        hour = dt.hour |> Integer.to_string() |> String.pad_leading(2, "0")
+        minute = dt.minute |> Integer.to_string() |> String.pad_leading(2, "0")
+        "#{hour}:#{minute}"
+    end
+  end
+  defp format_event_time(_), do: ""
 
   # Event helpers for activity cards
   defp get_event_icon(event) do
