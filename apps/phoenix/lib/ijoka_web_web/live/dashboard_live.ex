@@ -172,9 +172,24 @@ defmodule IjokaWebWeb.DashboardLive do
     # Find the feature from streams
     feature = find_feature_by_id(socket, feature_id)
 
-    # Fetch events linked to this feature
+    # Fetch events linked to this feature and add dom_id for activity_card compatibility
     feature_events = case Memgraph.get_feature_events(feature_id, 50) do
-      {:ok, events} -> events
+      {:ok, events} ->
+        events
+        |> Enum.with_index()
+        |> Enum.map(fn {event, idx} ->
+          # Convert to format expected by activity_card (atom keys with dom_id)
+          %{
+            dom_id: "modal-event-#{idx}",
+            id: event.id,
+            event_type: event.event_type,
+            source_agent: event.source_agent,
+            session_id: event.session_id,
+            tool_name: event.tool_name,
+            payload: event.payload,
+            created_at: event.created_at
+          }
+        end)
       {:error, _} -> []
     end
 
@@ -214,8 +229,9 @@ defmodule IjokaWebWeb.DashboardLive do
   end
 
   def handle_event("open_event", %{"id" => event_id}, socket) do
-    # Find event from grouped_events
-    event = find_event_by_id(socket.assigns.grouped_events, event_id)
+    # First try to find in grouped_events (sidebar), then in selected_feature_events (modal)
+    event = find_event_by_id(socket.assigns.grouped_events, event_id) ||
+            find_event_in_modal(socket.assigns[:selected_feature_events] || [], event_id)
     {:noreply, assign(socket, :selected_event, event)}
   end
 
@@ -245,6 +261,11 @@ defmodule IjokaWebWeb.DashboardLive do
     Enum.find_value(grouped_events, fn session ->
       Enum.find(session.events, fn e -> e[:dom_id] == event_id end)
     end)
+  end
+
+  defp find_event_in_modal(feature_events, event_id) do
+    # Search in feature modal events by dom_id
+    Enum.find(feature_events, fn e -> e[:dom_id] == event_id end)
   end
 
   defp maybe_reload_features(socket, event) do
@@ -622,7 +643,7 @@ defmodule IjokaWebWeb.DashboardLive do
             </ol>
           </div>
 
-          <!-- Activity History Section -->
+          <!-- Activity History Section - Reuses activity_card component -->
           <div :if={length(@events) > 0} class="modal-events-section">
             <h3 class="modal-events-header">
               <svg class="events-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -632,10 +653,7 @@ defmodule IjokaWebWeb.DashboardLive do
               <span class="events-count-badge">{length(@events)}</span>
             </h3>
             <div class="modal-events-list">
-              <div :for={event <- Enum.take(@events, 20)} class="modal-event-item">
-                <span class="event-tool">{event.tool_name || event.event_type}</span>
-                <span class="event-time">{format_event_time(event.created_at)}</span>
-              </div>
+              <.activity_card :for={event <- Enum.take(@events, 20)} event={event} />
             </div>
           </div>
         </div>
@@ -1461,18 +1479,6 @@ defmodule IjokaWebWeb.DashboardLive do
       _ -> "--"
     end
   end
-
-  defp format_event_time(nil), do: ""
-  defp format_event_time(time_str) when is_binary(time_str) do
-    case parse_datetime(time_str) do
-      nil -> ""
-      dt ->
-        hour = dt.hour |> Integer.to_string() |> String.pad_leading(2, "0")
-        minute = dt.minute |> Integer.to_string() |> String.pad_leading(2, "0")
-        "#{hour}:#{minute}"
-    end
-  end
-  defp format_event_time(_), do: ""
 
   # Event helpers for activity cards
   defp get_event_icon(event) do
