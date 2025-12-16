@@ -210,7 +210,12 @@ defmodule IjokaWebWeb.DashboardLive do
   end
 
   def handle_event("close_modal", _, socket) do
-    {:noreply, assign(socket, :selected_feature, nil)}
+    {:noreply,
+     socket
+     |> assign(:selected_feature, nil)
+     |> assign(:selected_feature_events, [])
+     |> assign(:selected_feature_steps, [])
+     |> assign(:expanded_modal_event, nil)}
   end
 
   def handle_event("toggle_step", %{"step-id" => step_id}, socket) do
