@@ -1,23 +1,22 @@
 # Update Ijoka Plugin
 
-Run the following commands sequentially to update the Ijoka plugin to the latest version:
+Run the update script to commit any plugin changes to GitHub and reinstall the plugin:
 
 ```bash
-claude plugin marketplace update ijoka
+/Users/shakes/DevProjects/ijoka/scripts/update-claude-plugin.sh
 ```
 
-Wait for the marketplace update to complete, then:
+This script will:
+1. Check for uncommitted changes in `packages/claude-plugin/`
+2. If changes exist, commit and push them to GitHub
+3. Clean the plugin cache
+4. Reinstall the plugin from the local directory
 
+**Optional:** Provide a custom commit message:
 ```bash
-claude plugin uninstall ijoka@ijoka
+/Users/shakes/DevProjects/ijoka/scripts/update-claude-plugin.sh "feat(plugin): add new feature"
 ```
 
-Wait for uninstall to complete, then:
+**Important:** After running this script, you may need to restart Claude Code for changes to take full effect.
 
-```bash
-claude plugin install ijoka@ijoka
-```
-
-**Important:** After running these commands, you may need to restart Claude Code for changes to take full effect.
-
-Run each command above in sequence using the Bash tool.
+Run the script above using the Bash tool.
