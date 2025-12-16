@@ -107,89 +107,57 @@ def ensure_api_running() -> tuple[bool, str]:
     return success, message
 
 
-# API-first enforcement notice - included in all session contexts
+# Ijoka process notice - included in all session contexts
 # CRITICAL: This must appear FIRST in context to ensure agent sees it before taking action
-API_FIRST_ENFORCEMENT = """## ⚠️ CRITICAL: API-First for Agents
+IJOKA_PROCESS_NOTICE = """## IJOKA DEVELOPMENT PROCESS ACTIVE
 
-### Interface Hierarchy
+**Ijoka is installed. You MUST follow the Ijoka development process for ALL work.**
 
-| Interface | Audience | When to Use |
-|-----------|----------|-------------|
-| **REST API** | AI Agents | Primary interface - `curl http://localhost:8000/...` |
-| **CLI** | Humans | Interactive terminal use - `ijoka status` |
-| **Direct DB** | Hooks only | Internal use - SessionStart context injection |
+See the `ijoka-development-process` skill for complete workflow documentation.
+See `IJOKA_POLICY.md` in the plugin for full policy details.
 
----
+### Quick Reference
 
-### FIRST ACTION: Call the REST API
-
-Before doing ANYTHING else, call the API to get project state:
-
+**MANDATORY: Before any coding work:**
 ```bash
-curl -s http://localhost:8000/status
-```
-
-This returns JSON - perfect for agent consumption. No PATH issues, no directory requirements.
-
----
-
-### REST API Endpoints (http://localhost:8000)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/status` | **START HERE** - Project status, active feature, progress |
-| GET | `/features` | List all features |
-| GET | `/features/{id}` | Get specific feature |
-| POST | `/features` | Create feature |
-| POST | `/features/{id}/start` | Start working on a feature |
-| POST | `/features/{id}/complete` | Mark feature complete |
-| POST | `/features/next/start` | Start next pending feature |
-| GET | `/plan` | Get plan for active feature |
-| POST | `/plan` | Set plan for active feature |
-| POST | `/checkpoint` | Report progress |
-| GET | `/insights` | List insights |
-| POST | `/insights` | Record insight |
-| GET | `/analytics/digest` | Daily insights digest |
-| POST | `/analytics/query` | Natural language query |
-
----
-
-### Example Agent Workflow
-
-```bash
-# 1. Get current status
 curl -s http://localhost:8000/status | jq
-
-# 2. Start a feature
-curl -s -X POST http://localhost:8000/features/{id}/start
-
-# 3. Set a plan
-curl -s -X POST http://localhost:8000/plan \\
-  -H "Content-Type: application/json" \\
-  -d '{"steps": ["Step 1", "Step 2"]}'
-
-# 4. Report checkpoint
-curl -s -X POST http://localhost:8000/checkpoint \\
-  -H "Content-Type: application/json" \\
-  -d '{"step_completed": "Step 1"}'
-
-# 5. Complete feature
-curl -s -X POST http://localhost:8000/features/{id}/complete
 ```
 
----
+**Core Rules:**
+1. **Have active work items** - All activity must be attributed to features/bugs/spikes
+2. **Parallel development OK** - Up to 3 features can be in progress (WIP limit)
+3. **Finish over start** - Complete existing work before starting new
+4. **Use the API** - `http://localhost:8000` for all Ijoka operations
+5. **Use Ijoka for tasks** - `/plan` command, NOT internal TodoWrite
 
-### Why API-First?
+**Work Item Commands:**
+- `/add-feature "desc"` - Create feature
+- `/bug "desc"` - Create bug
+- `/spike "desc"` - Create research item
+- `/subtask "desc"` - Create child of current feature
+- `/plan Step 1 | Step 2` - Set implementation steps
+- `/set-feature {id}` - Switch to specific feature
 
-**NEVER bypass the API** by calling Python scripts or database queries directly.
+**API Endpoints (http://localhost:8000):**
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /status` | Project status, active features, WIP count |
+| `POST /features/{id}/start` | Start working on feature |
+| `POST /features/{id}/complete` | Mark complete |
+| `GET /plan` | View current steps |
+| `POST /plan` | Set steps (JSON: `{"steps": [...]}`) |
 
-1. **Reliable** - Always available at `http://localhost:8000`, no PATH/directory issues
-2. **JSON** - Structured responses perfect for agent parsing
-3. **Validation** - API validates inputs and handles errors gracefully
-4. **Audit Trail** - All operations logged for debugging
-5. **Client Agnostic** - Works across Claude Code, Codex, Gemini, any HTTP client
+**Parallel Development:**
+- Multiple features can be in progress simultaneously
+- Smart attribution scores activity to best-matching feature
+- Use `/set-feature` to switch primary focus
+- Keep features focused for better attribution
 
-**CLI Alternative:** For human interactive use, `ijoka status` provides pretty-formatted output."""
+**Hooks Active (All Activity Tracked):**
+- SessionStart: Records session, provides context
+- PostToolUse: Tracks ALL tool calls, attributes to features
+- UserPromptSubmit: Captures queries, classifies features
+- SessionEnd: Parses transcript, generates summary"""
 
 
 def get_head_commit(project_dir: str) -> Optional[str]:
@@ -514,8 +482,8 @@ def main():
         # Build rich context with previous session, step progress, and commits
         context_parts = []
 
-        # API-first enforcement FIRST - agent must see this before anything else
-        context_parts.append(API_FIRST_ENFORCEMENT)
+        # Ijoka process notice FIRST - agent must see this before anything else
+        context_parts.append(IJOKA_PROCESS_NOTICE)
 
         # Add previous session summary if available (what was done)
         prev_session = get_previous_session_summary(session_id, project_dir)
@@ -603,8 +571,8 @@ After completing the current feature, these are queued:
         prev_session = get_previous_session_summary(session_id, project_dir)
         prev_section = f"\n\n---\n\n{prev_session}" if prev_session else ""
 
-        # API-first enforcement FIRST - agent must see this before anything else
-        context = f"""{API_FIRST_ENFORCEMENT}
+        # Ijoka process notice FIRST - agent must see this before anything else
+        context = f"""{IJOKA_PROCESS_NOTICE}
 
 ---
 
